@@ -59,6 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/instal
 - Proxmox VE 8.x / 9.x
 
 Docker가 없으면 설치 스크립트가 함께 설치합니다.
+PDF 보고서용 한글 글꼴(나눔고딕·나눔명조)도 설치 중 받습니다 (raw.githubusercontent.com 접근 필요).
 
 ## 관리
 
