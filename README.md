@@ -18,7 +18,22 @@ curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/instal
 ```
 
 라이선스 키는 설치 후 화면의 **설정 > 라이선스**에서 입력해도 됩니다.
-설치가 끝나면 `http://<서버 주소>:3000` 에 접속해 첫 관리자 계정을 만듭니다.
+설치가 끝나면 `https://<서버 주소>` 에 접속해 첫 관리자 계정을 만듭니다.
+
+## HTTPS
+
+기본으로 HTTPS(443)로 설치되고, HTTP(80) 접속은 HTTPS 로 넘어갑니다. 3000 포트는 서버 내부에서만 쓰입니다.
+
+| 옵션 | 설명 |
+|---|---|
+| (기본) | 자체 서명 인증서를 자동 생성 — 브라우저에 보안 경고가 표시됩니다 |
+| `--cert <인증서> --key <개인키>` | 기관 인증서 사용 (설치 후 교체도 `--upgrade --cert … --key …`) |
+| `--domain <이름>` | 접속 주소로 쓸 도메인 (기본: 서버 IP) |
+| `--no-https` | HTTPS 없이 `http://<서버>:3000` 으로 운영 |
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/install-moavi.sh | sudo bash -s -- --token <설치 토큰> --domain moavi.example.go.kr --cert /root/moavi.crt --key /root/moavi.key
+```
 
 ## 업그레이드
 
@@ -40,7 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/instal
 
 - Linux (Ubuntu, Debian, Rocky, AlmaLinux, RHEL), root 권한
 - 메모리 2 GB, 디스크 10 GB 이상
-- 포트: 3000 인바운드 / Proxmox VE 8006, PBS 8007 아웃바운드
+- 포트: 443·80 인바운드 / Proxmox VE 8006, PBS 8007 아웃바운드
 - Proxmox VE 8.x / 9.x
 
 Docker가 없으면 설치 스크립트가 함께 설치합니다.

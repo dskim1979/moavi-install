@@ -105,6 +105,10 @@ show_usage() {
   --version <tag>        MOAVI 버전 (기본: $MOAVI_VERSION_DEFAULT)
   --upgrade              기존 설치 업그레이드 (.env·데이터 유지)
   --relogin              (업그레이드) 설치 토큰으로 레지스트리 로그인을 다시 받음 — 설치 수 1건 차감
+  --domain <이름>        접속 주소로 쓸 도메인 (기본: 서버 IP)
+  --cert <파일> --key <파일>  HTTPS 인증서·개인키 (기본: 자체 서명 인증서 자동 생성)
+  --no-https             HTTPS 없이 3000 포트(HTTP)로 운영
+  --https                (업그레이드) HTTP 로 운영하던 설치를 HTTPS 로 전환
   --help                 도움말
 EOF
     exit 1
@@ -122,6 +126,10 @@ MOAVI_VERSION="$MOAVI_VERSION_DEFAULT"
 UPSTREAM_TAG="$UPSTREAM_TAG_DEFAULT"
 UPGRADE_MODE=false
 RELOGIN=false
+HTTPS=""                      # 비우면: 신규 설치는 HTTPS, 업그레이드는 기존 설정 유지
+DOMAIN=""
+CERT_FILE=""
+KEY_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -132,6 +140,11 @@ while [[ $# -gt 0 ]]; do
         --upstream)    UPSTREAM_TAG="$2"; shift 2 ;;
         --upgrade)     UPGRADE_MODE=true; shift ;;
         --relogin)     RELOGIN=true; shift ;;
+        --https)       HTTPS=true; shift ;;
+        --no-https)    HTTPS=false; shift ;;
+        --domain)      DOMAIN="$2"; shift 2 ;;
+        --cert)        CERT_FILE="$2"; shift 2 ;;
+        --key)         KEY_FILE="$2"; shift 2 ;;
         --help|-h)     show_usage ;;
         *)             log_error "알 수 없는 옵션: $1" ;;
     esac
@@ -363,7 +376,150 @@ services:
   weasyprint:
     container_name: moavi-weasyprint
 EOF
+
+    # HTTPS: nginx(moavi-proxy)가 443 으로 받아 frontend 로 전달, 3000 은 서버 내부(127.0.0.1)에서만
+    if [ "$HTTPS" = "true" ]; then
+        cat >> docker-compose.moavi.yml << 'EOF'
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: moavi-proxy
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_healthy
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./proxy/ssl:/etc/nginx/ssl:ro
+    networks:
+      - proxcenter
+EOF
+        # frontend 의 외부 3000 포트를 서버 내부 전용으로 바꿈
+        sed -i 's|^    container_name: moavi-frontend$|    container_name: moavi-frontend\n    ports: !override\n      - "127.0.0.1:3000:3000"|' docker-compose.moavi.yml
+    fi
     log_success "compose 구성 저장"
+}
+
+# HTTPS 사용 여부·접속 주소 결정 (신규: 기본 HTTPS / 업그레이드: .env 의 MOAVI_HTTPS, 없으면 HTTPS 로 전환)
+resolve_access() {
+    if [ -z "$HTTPS" ]; then
+        HTTPS=$(get_env MOAVI_HTTPS)
+        [ -n "$HTTPS" ] || HTTPS=true
+    fi
+    PUBLIC_HOST=${DOMAIN:-$(get_env MOAVI_PUBLIC_HOST)}
+    [ -n "$PUBLIC_HOST" ] || PUBLIC_HOST=$(hostname -I | awk '{print $1}' | head -1)
+    [ -n "$PUBLIC_HOST" ] || PUBLIC_HOST="localhost"
+    if [ "$HTTPS" = "true" ]; then PUBLIC_URL="https://$PUBLIC_HOST"; else PUBLIC_URL="http://$PUBLIC_HOST:3000"; fi
+}
+
+# nginx 설정·인증서 (자체 서명 인증서는 없을 때만 생성, --cert/--key 를 주면 교체)
+setup_https() {
+    [ "$HTTPS" = "true" ] || return 0
+    cd "$INSTALL_DIR"
+    mkdir -p proxy/ssl
+
+    if [ -z "$(docker ps -q -f name=^moavi-proxy$ 2>/dev/null)" ] && \
+       ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE '(^|:)(80|443)$'; then
+        log_error "80 또는 443 포트를 다른 프로그램이 쓰고 있습니다. 비우거나 --no-https 로 설치하세요."
+    fi
+
+    if [ -n "$CERT_FILE$KEY_FILE" ]; then
+        [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ] || log_error "인증서(--cert)와 개인키(--key) 파일을 모두 지정하세요"
+        cp "$CERT_FILE" proxy/ssl/moavi.crt
+        cp "$KEY_FILE" proxy/ssl/moavi.key
+        log_success "지정한 인증서 적용"
+    elif [ ! -s proxy/ssl/moavi.crt ]; then
+        local ip san
+        ip=$(hostname -I | awk '{print $1}' | head -1)
+        san="DNS:$(hostname)${ip:+,IP:$ip}"
+        [ -z "$DOMAIN" ] || san="DNS:$DOMAIN,$san"
+        if ! openssl req -x509 -newkey rsa:3072 -sha256 -days 3650 -nodes \
+            -keyout proxy/ssl/moavi.key -out proxy/ssl/moavi.crt \
+            -subj "/CN=$PUBLIC_HOST/O=MOAVI" -addext "subjectAltName=$san" >> "$LOG_FILE" 2>&1; then
+            log_error "자체 서명 인증서를 만들지 못했습니다"
+        fi
+        log_success "자체 서명 인증서 생성 (RSA 3072, 10년)"
+    fi
+    chmod 600 proxy/ssl/moavi.key
+
+    cat > proxy/nginx.conf << 'EOF'
+# MOAVI HTTPS 프록시 (install-moavi.sh 가 생성 — 직접 수정하지 마세요)
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/ssl/moavi.crt;
+    ssl_certificate_key /etc/nginx/ssl/moavi.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    client_max_body_size 0;                 # ISO·이미지 업로드
+    large_client_header_buffers 4 32k;
+
+    # 콘솔(noVNC)·쉘(xterm) 웹소켓
+    location /api/internal/ws/ {
+        proxy_pass http://frontend:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        proxy_buffering off;
+    }
+
+    location / {
+        proxy_pass http://frontend:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_request_buffering off;
+    }
+}
+EOF
+    log_success "HTTPS 프록시 구성"
+}
+
+# .env 의 접속 주소 (관리자가 직접 바꾼 주소는 유지)
+apply_access_env() {
+    local cur
+    cur=$(get_env NEXTAUTH_URL)
+    if [ -z "$cur" ] || [ -n "$DOMAIN" ] || echo "$cur" | grep -qE '^https?://[^/]+:3000/?$|^https://[^/:]+/?$'; then
+        set_env NEXTAUTH_URL "$PUBLIC_URL"
+        set_env APP_URL "$PUBLIC_URL"
+    else
+        PUBLIC_URL="$cur"
+    fi
+    set_env MOAVI_HTTPS "$HTTPS"
+    set_env MOAVI_PUBLIC_HOST "$PUBLIC_HOST"
 }
 
 setup_moavi() {
@@ -371,6 +527,7 @@ setup_moavi() {
 
     mkdir -p "$INSTALL_DIR/config"
     cd "$INSTALL_DIR"
+    resolve_access
     write_compose
 
     APP_SECRET=$(openssl rand -hex 32)
@@ -438,6 +595,8 @@ EOF
 
     chmod 600 "$INSTALL_DIR/.env"
     chmod 644 "$INSTALL_DIR/config/orchestrator.yaml"   # 컨테이너(비 root)가 읽음
+    apply_access_env
+    setup_https
     log_success "보안 키 생성 및 설정 저장"
 }
 
@@ -445,6 +604,7 @@ upgrade_moavi() {
     step 4 "구성 갱신 (업그레이드)"
     cd "$INSTALL_DIR"
     cp -p .env ".env.bak.$(date +%Y%m%d-%H%M%S)"
+    resolve_access
     write_compose
 
     set_env COMPOSE_FILE "docker-compose.yml:docker-compose.moavi.yml"
@@ -460,7 +620,9 @@ upgrade_moavi() {
     if ! grep -q '^ORCHESTRATOR_API_KEY=' .env || grep -q '^ORCHESTRATOR_API_KEY=your-orchestrator-api-key-change-me' .env; then
         set_env ORCHESTRATOR_API_KEY "$(openssl rand -hex 32)"
     fi
+    apply_access_env
     chmod 600 .env
+    setup_https
     log_success "MOAVI $MOAVI_VERSION 로 설정"
 }
 
@@ -537,6 +699,19 @@ start_and_wait() {
     spinner $wait_pid "orchestrator 기동 중..."
     wait $wait_pid || log_error "orchestrator가 2분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs orchestrator"
 
+    if [ "$HTTPS" = "true" ]; then
+        (
+            for _ in $(seq 30); do
+                curl -sk -f https://localhost/api/health > /dev/null 2>&1 && exit 0
+                sleep 2
+            done
+            exit 1
+        ) &
+        wait_pid=$!
+        spinner $wait_pid "HTTPS 프록시 기동 중..."
+        wait $wait_pid || log_error "HTTPS 프록시가 응답하지 않습니다. 확인: cd $INSTALL_DIR && docker compose logs proxy"
+    fi
+
     log_success "모든 서비스 정상"
 }
 
@@ -549,12 +724,18 @@ print_summary() {
     echo -e "${GREEN}${BOLD}  │        MOAVI 설치가 완료되었습니다          │${NC}"
     echo -e "${GREEN}${BOLD}  └─────────────────────────────────────────────┘${NC}"
     echo ""
-    echo -e "    ${BOLD}접속 주소${NC}   ${CYAN}http://$SERVER_IP:3000${NC}"
+    echo -e "    ${BOLD}접속 주소${NC}   ${CYAN}${PUBLIC_URL:-http://$SERVER_IP:3000}${NC}"
     echo -e "    ${BOLD}설치 위치${NC}   $INSTALL_DIR"
     echo -e "    ${BOLD}버전${NC}        MOAVI $MOAVI_VERSION"
     echo -e "    ${BOLD}소요 시간${NC}   $(format_duration $duration)"
     echo -e "    ${BOLD}설치 로그${NC}   $LOG_FILE"
     echo ""
+
+    if [ "$HTTPS" = "true" ] && [ -z "$CERT_FILE" ] && openssl x509 -in "$INSTALL_DIR/proxy/ssl/moavi.crt" -noout -subject 2>/dev/null | grep -q "O = MOAVI"; then
+        echo -e "    ${YELLOW}${BOLD}!${NC} ${YELLOW}자체 서명 인증서 사용 중 — 브라우저에 보안 경고가 표시됩니다${NC}"
+        echo -e "      기관 인증서로 교체: ${DIM}--upgrade --cert <인증서> --key <개인키>${NC}"
+        echo ""
+    fi
 
     if [ -z "$LICENSE_KEY" ] && [ -z "$(get_env LICENSE_KEY)" ]; then
         echo -e "    ${YELLOW}${BOLD}!${NC} ${YELLOW}라이선스 키가 입력되지 않았습니다${NC}"
