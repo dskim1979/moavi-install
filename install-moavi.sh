@@ -104,6 +104,7 @@ show_usage() {
   --moavi-token <token>  (선택) MOAVI 이미지를 비공개로 운영할 때만 필요
   --version <tag>        MOAVI 버전 (기본: $MOAVI_VERSION_DEFAULT)
   --upgrade              기존 설치 업그레이드 (.env·데이터 유지)
+  --relogin              (업그레이드) 설치 토큰으로 레지스트리 로그인을 다시 받음 — 설치 수 1건 차감
   --help                 도움말
 EOF
     exit 1
@@ -120,6 +121,7 @@ MOAVI_TOKEN=""
 MOAVI_VERSION="$MOAVI_VERSION_DEFAULT"
 UPSTREAM_TAG="$UPSTREAM_TAG_DEFAULT"
 UPGRADE_MODE=false
+RELOGIN=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -129,6 +131,7 @@ while [[ $# -gt 0 ]]; do
         --version)     MOAVI_VERSION="$2"; shift 2 ;;
         --upstream)    UPSTREAM_TAG="$2"; shift 2 ;;
         --upgrade)     UPGRADE_MODE=true; shift ;;
+        --relogin)     RELOGIN=true; shift ;;
         --help|-h)     show_usage ;;
         *)             log_error "알 수 없는 옵션: $1" ;;
     esac
@@ -208,7 +211,14 @@ parse_json() {
 validate_token() {
     step 1 "설치 토큰 확인"
 
+    # 공급사는 토큰 확인 요청마다 설치 1건으로 집계 → 업그레이드는 기존 로그인을 사용 (--relogin 일 때만 호출)
+    if [ "$UPGRADE_MODE" = "true" ] && [ "$RELOGIN" != "true" ]; then
+        INSTALL_TOKEN=""
+        log_info "업그레이드 — 기존 레지스트리 로그인을 사용합니다"
+        return 0
+    fi
     if [ -z "$INSTALL_TOKEN" ]; then
+        [ "$RELOGIN" = "true" ] && log_error "--relogin 에는 --token 이 필요합니다"
         log_info "토큰 생략 — 기존 레지스트리 로그인을 사용합니다"
         return 0
     fi
