@@ -51,6 +51,25 @@ curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/instal
 curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/install-moavi.sh | sudo -E bash -s -- --token <설치 토큰>
 ```
 
+## 격리망(오프라인) 설치
+
+인터넷이 되지 않는 망분리·폐쇄망 환경은 (주)매커스시스템즈가 제공하는 **오프라인 번들**(`moavi-offline-<버전>.tar`)로 설치합니다.
+번들에는 설치 스크립트, 컨테이너 이미지, Docker, 한글 글꼴이 모두 들어 있어 설치 중 인터넷에 접속하지 않습니다.
+
+1. 번들과 SHA256 값을 기관 반입 절차(망연계 자료전송·백신 검사)로 반입합니다.
+2. 설치 서버(디스크 여유 15GB 이상)에서:
+
+```bash
+tar -xf moavi-offline-1.0.1.tar
+sudo bash moavi-offline-1.0.1/install-moavi.sh --offline moavi-offline-1.0.1 --license <라이선스 키>
+```
+
+- 설치 스크립트가 번들의 SHA256 을 확인하고, Docker 가 없으면 번들의 Docker 를 설치합니다.
+- HTTPS·인증서 옵션은 온라인 설치와 같습니다 (`--cert`, `--key`, `--domain`).
+- 업그레이드: 새 번들을 풀고 `sudo bash moavi-offline-<새 버전>/install-moavi.sh --offline moavi-offline-<새 버전> --upgrade`
+
+번들 요청: support@makussystems.co.kr
+
 ## 요구 사항
 
 - Linux (Ubuntu, Debian, Rocky, AlmaLinux, RHEL), root 권한

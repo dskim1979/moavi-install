@@ -109,6 +109,8 @@ show_usage() {
   --cert <파일> --key <파일>  HTTPS 인증서·개인키 (기본: 자체 서명 인증서 자동 생성)
   --no-https             HTTPS 없이 3000 포트(HTTP)로 운영
   --https                (업그레이드) HTTP 로 운영하던 설치를 HTTPS 로 전환
+  --offline <번들>       격리망(인터넷 없음) 설치 — make-offline-bundle.sh 로 만든 번들(.tar 또는 풀어 둔 폴더)
+                         토큰 불필요. 예: sudo bash install-moavi.sh --offline moavi-offline-1.0.1.tar
   --help                 도움말
 EOF
     exit 1
@@ -145,10 +147,39 @@ while [[ $# -gt 0 ]]; do
         --domain)      DOMAIN="$2"; shift 2 ;;
         --cert)        CERT_FILE="$2"; shift 2 ;;
         --key)         KEY_FILE="$2"; shift 2 ;;
+        --offline)     OFFLINE_SRC="$2"; shift 2 ;;
         --help|-h)     show_usage ;;
         *)             log_error "알 수 없는 옵션: $1" ;;
     esac
 done
+
+# ---- 격리망 설치: 번들 풀기·검증, 번들에 적힌 버전 사용 ----
+OFFLINE=false
+OFFLINE_DIR=""
+if [ -n "${OFFLINE_SRC:-}" ]; then
+    OFFLINE=true
+    [ "$EUID" -eq 0 ] || log_error "root 권한이 필요합니다 (sudo)"
+    if [ -d "$OFFLINE_SRC" ]; then
+        OFFLINE_DIR=$(cd "$OFFLINE_SRC" && pwd)
+    elif [ -f "$OFFLINE_SRC" ]; then
+        OFFLINE_TMP=$(mktemp -d /var/tmp/moavi-offline.XXXXXX)
+        trap 'rm -rf "$OFFLINE_TMP"' EXIT
+        echo -e "    ${DIM}번들 푸는 중: $OFFLINE_SRC (이미지 포함이라 1~2분 걸릴 수 있음)${NC}"
+        tar -xf "$OFFLINE_SRC" -C "$OFFLINE_TMP" || log_error "번들을 풀지 못했습니다 (디스크 여유 공간 확인: /var/tmp): $OFFLINE_SRC"
+        # 번들은 moavi-offline-<버전>/ 폴더 하나로 되어 있음
+        OFFLINE_DIR=$(dirname "$(find "$OFFLINE_TMP" -maxdepth 2 -name bundle.env | head -1)")
+    else
+        log_error "번들을 찾을 수 없습니다: $OFFLINE_SRC"
+    fi
+    [ -f "$OFFLINE_DIR/bundle.env" ] || log_error "MOAVI 오프라인 번들이 아닙니다 (bundle.env 없음): $OFFLINE_SRC"
+    echo -e "    ${DIM}번들 무결성 확인 중 (SHA256)...${NC}"
+    (cd "$OFFLINE_DIR" && sha256sum -c --quiet SHA256SUMS) || log_error "번들 파일이 손상되었거나 변경되었습니다 (SHA256 불일치) — 번들을 다시 반입하세요"
+    # shellcheck disable=SC1091
+    . "$OFFLINE_DIR/bundle.env"
+    MOAVI_VERSION="$BUNDLE_MOAVI_VERSION"
+    UPSTREAM_TAG="$BUNDLE_UPSTREAM_TAG"
+    MOAVI_REGISTRY="$BUNDLE_MOAVI_REGISTRY"
+fi
 
 MOAVI_IMAGE="$MOAVI_REGISTRY/moavi-frontend:$MOAVI_VERSION"
 
@@ -202,6 +233,11 @@ preflight_checks() {
         [ -n "$MOAVI_TOKEN" ] || MOAVI_TOKEN=$(get_env MOAVI_GHCR_TOKEN)
     fi
 
+    if [ "$OFFLINE" = "true" ]; then
+        log_info "격리망 설치 — 번들: MOAVI $MOAVI_VERSION (만든 날짜 ${BUNDLE_CREATED:-?})"
+        return 0
+    fi
+
     if [ -z "$INSTALL_TOKEN" ] && [ "$UPGRADE_MODE" != "true" ]; then
         echo -e "${RED}오류: 신규 설치에는 --token 이 필요합니다${NC}"; echo ""; show_usage
     fi
@@ -223,6 +259,11 @@ parse_json() {
 # 설치 토큰을 공급사 API에 확인하고 레지스트리 계정을 받음 (공급사 설치 스크립트와 동일한 방식)
 validate_token() {
     step 1 "설치 토큰 확인"
+
+    if [ "$OFFLINE" = "true" ]; then
+        log_info "격리망 설치 — 토큰 확인 생략 (번들을 만들 때 확인함)"
+        return 0
+    fi
 
     # 공급사는 토큰 확인 요청마다 설치 1건으로 집계 → 업그레이드는 기존 로그인을 사용 (--relogin 일 때만 호출)
     if [ "$UPGRADE_MODE" = "true" ] && [ "$RELOGIN" != "true" ]; then
@@ -266,11 +307,70 @@ validate_token() {
 # ============================================
 # 2. Docker 설치
 # ============================================
+# 격리망: 번들의 Docker 정적 바이너리 설치 (dockerd 가 containerd 를 직접 띄움)
+install_compose_offline() {
+    [ -f "$OFFLINE_DIR/docker/docker-compose" ] || log_error "번들에 docker compose 플러그인이 없습니다"
+    install -d -m 0755 /usr/local/lib/docker/cli-plugins
+    install -m 0755 "$OFFLINE_DIR/docker/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
+    log_success "docker compose 플러그인 설치 (번들)"
+}
+
+install_docker_offline() {
+    local tgz
+    tgz=$(ls "$OFFLINE_DIR"/docker/docker-*.tgz 2>/dev/null | head -1)
+    [ -n "$tgz" ] || log_error "번들에 Docker 설치 파일이 없습니다. Docker 를 먼저 설치하거나 번들을 다시 만드세요."
+    command -v iptables > /dev/null 2>&1 || log_warning "iptables 가 없습니다 — Docker 네트워크에 필요합니다 (OS 설치 매체에서 iptables 패키지 설치)"
+
+    local tmp
+    tmp=$(mktemp -d)
+    tar -xzf "$tgz" -C "$tmp"
+    install -m 0755 "$tmp"/docker/* /usr/bin/
+    rm -rf "$tmp"
+    install_compose_offline
+
+    getent group docker > /dev/null || groupadd --system docker
+    cat > /etc/systemd/system/docker.service << 'EOF'
+# MOAVI 격리망 설치 — Docker 정적 바이너리용 서비스
+[Unit]
+Description=Docker Application Container Engine
+After=network-online.target firewalld.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/dockerd
+ExecReload=/bin/kill -s HUP $MAINPID
+TimeoutStartSec=0
+Restart=always
+RestartSec=2
+LimitNOFILE=infinity
+LimitNPROC=infinity
+TasksMax=infinity
+Delegate=yes
+KillMode=process
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now docker > /dev/null 2>&1 || log_error "Docker 서비스를 시작하지 못했습니다 (journalctl -u docker 확인)"
+    for _ in $(seq 30); do docker info > /dev/null 2>&1 && break; sleep 1; done
+    docker info > /dev/null 2>&1 || log_error "Docker 가 응답하지 않습니다 (journalctl -u docker 확인)"
+    log_success "Docker $(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1) 설치 완료 (번들)"
+}
+
 install_docker() {
     step 2 "Docker 설치"
 
     if command -v docker &> /dev/null; then
         log_success "Docker $(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1) 설치되어 있음"
+        docker compose version > /dev/null 2>&1 || [ "$OFFLINE" != "true" ] || install_compose_offline
+        return
+    fi
+
+    if [ "$OFFLINE" = "true" ]; then
+        install_docker_offline
         return
     fi
 
@@ -306,6 +406,10 @@ install_docker() {
 # ============================================
 authenticate_registry() {
     step 3 "컨테이너 레지스트리 인증"
+    if [ "$OFFLINE" = "true" ]; then
+        log_info "격리망 설치 — 레지스트리를 쓰지 않습니다 (번들 이미지 사용)"
+        return 0
+    fi
     if [ -z "$REGISTRY_PASS" ]; then
         log_info "기존 로그인 정보를 사용합니다"
         return 0
@@ -354,6 +458,12 @@ migrate_legacy() {
 install_fonts() {
     local dir="$INSTALL_DIR/fonts" base="https://raw.githubusercontent.com/google/fonts/main/ofl" f ok=true
     mkdir -p "$dir"
+    if [ "$OFFLINE" = "true" ]; then
+        cp -f "$OFFLINE_DIR"/fonts/*.ttf "$dir"/ 2>/dev/null || log_warning "번들에 한글 글꼴이 없습니다 — PDF 보고서 한글이 깨질 수 있습니다"
+        chmod 755 "$dir"; chmod 644 "$dir"/*.ttf 2>/dev/null || true
+        log_success "보고서 한글 글꼴(나눔) 준비 (번들)"
+        return 0
+    fi
     for f in nanumgothic/NanumGothic-Regular.ttf nanumgothic/NanumGothic-Bold.ttf nanumgothic/NanumGothic-ExtraBold.ttf \
              nanummyeongjo/NanumMyeongjo-Regular.ttf nanummyeongjo/NanumMyeongjo-Bold.ttf; do
         [ -s "$dir/${f#*/}" ] && continue
@@ -370,7 +480,9 @@ install_fonts() {
 write_compose() {
     cd "$INSTALL_DIR"
     local url="$COMPOSE_URL_BASE/$UPSTREAM_TAG/docker-compose.enterprise.yml"
-    if ! curl -fsSL "$url" -o docker-compose.yml.new 2>/dev/null; then
+    if [ "$OFFLINE" = "true" ]; then
+        cp "$OFFLINE_DIR/docker-compose.yml" docker-compose.yml.new
+    elif ! curl -fsSL "$url" -o docker-compose.yml.new 2>/dev/null; then
         rm -f docker-compose.yml.new
         log_error "compose 파일을 받지 못했습니다"
     fi
@@ -653,6 +765,12 @@ pull_and_init() {
     step 5 "이미지 받기 및 초기화"
     cd "$INSTALL_DIR"
 
+    if [ "$OFFLINE" = "true" ]; then
+        load_images_offline
+        init_volumes
+        return 0
+    fi
+
     # 공급사 이미지 (frontend 제외)
     log_info "이미지 받는 중 (몇 분 걸릴 수 있습니다)..."
     if ! docker compose pull $(docker compose config --services | grep -vx frontend) >> "$LOG_FILE" 2>&1; then
@@ -675,7 +793,10 @@ pull_and_init() {
     fi
     rm -rf "$cfg"
     log_success "이미지 받기 완료"
+    init_volumes
+}
 
+init_volumes() {
     docker volume create proxcenter_data > /dev/null 2>&1 || true
     docker volume create orchestrator_data > /dev/null 2>&1 || true
     docker volume create postgres_data > /dev/null 2>&1 || true
@@ -687,13 +808,31 @@ pull_and_init() {
     log_success "볼륨 초기화 완료"
 }
 
+# 격리망: 번들의 이미지 파일을 불러오고, compose 가 쓰는 이미지가 모두 있는지 확인
+load_images_offline() {
+    log_info "이미지 불러오는 중 (몇 분 걸릴 수 있습니다)..."
+    (docker load -i "$OFFLINE_DIR/images.tar.gz" >> "$LOG_FILE" 2>&1) &
+    local pid=$!
+    spinner $pid "이미지 불러오는 중..."
+    wait $pid || log_error "이미지를 불러오지 못했습니다 (디스크 여유 공간 확인, 로그: $LOG_FILE)"
+
+    local missing="" img
+    for img in $(docker compose config --images 2>/dev/null); do
+        docker image inspect "$img" > /dev/null 2>&1 || missing="$missing $img"
+    done
+    [ -z "$missing" ] || log_error "번들에 없는 이미지가 있습니다:$missing — 같은 버전으로 번들을 다시 만드세요"
+    log_success "이미지 불러오기 완료 ($(echo "$BUNDLE_IMAGES" | wc -w)개)"
+}
+
 # ============================================
 # 6. 기동
 # ============================================
 start_and_wait() {
     step 6 "MOAVI 기동"
     cd "$INSTALL_DIR"
-    docker compose up -d --remove-orphans >> "$LOG_FILE" 2>&1 || log_error "컨테이너 기동 실패 (로그: $LOG_FILE)"
+    local pull_opt=""
+    [ "$OFFLINE" = "true" ] && pull_opt="--pull never"   # 격리망: 레지스트리 접속 시도 안 함
+    docker compose up -d --remove-orphans $pull_opt >> "$LOG_FILE" 2>&1 || log_error "컨테이너 기동 실패 (로그: $LOG_FILE)"
     log_success "컨테이너 기동"
 
     log_info "서비스 준비를 기다리는 중..."
@@ -768,7 +907,11 @@ print_summary() {
     echo -e "      ${DIM}docker compose logs -f     # 로그${NC}"
     echo -e "      ${DIM}docker compose down        # 중지${NC}"
     echo ""
-    echo -e "    ${DIM}업그레이드: sudo bash install-moavi.sh --upgrade --version <MOAVI 버전>${NC}"
+    if [ "$OFFLINE" = "true" ]; then
+        echo -e "    ${DIM}업그레이드: 새 번들을 반입한 뒤 sudo bash install-moavi.sh --offline <새 번들> --upgrade${NC}"
+    else
+        echo -e "    ${DIM}업그레이드: sudo bash install-moavi.sh --upgrade --version <MOAVI 버전>${NC}"
+    fi
     echo ""
     echo -e "    ${DIM}기술 지원: support@makussystems.co.kr${NC}"
     echo ""
