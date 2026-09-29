@@ -1,0 +1,151 @@
+# ============================================
+# MOAVI Enterprise — (주)매커스시스템즈
+# ============================================
+# install-moavi.sh 가 /opt/moavi 에 내려받아 사용합니다 (직접 수정하지 마세요).
+# 설치별 값은 .env, HTTPS·글꼴 등 추가 구성은 docker-compose.moavi.yml (설치 스크립트가 생성).
+#
+# 내부 식별자(환경변수 접두사, 기존 설치의 DB·볼륨 이름 기본값)는 백엔드 호환과 기존 데이터 보존을 위해 유지합니다.
+# 신규 설치는 .env 의 POSTGRES_USER·POSTGRES_DB·APP_DATA_VOLUME 으로 moavi 이름을 씁니다.
+
+services:
+  # ---------- 화면·API (Next.js + 웹소켓) ----------
+  frontend:
+    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-frontend:${MOAVI_VERSION:-latest}
+    container_name: moavi-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-proxcenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-proxcenter}?schema=public
+      - APP_SECRET=${APP_SECRET}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+      - APP_URL=${APP_URL:-http://localhost:3000}
+      # 이 인스턴스가 실행한 마이그레이션 작업 식별자 (재기동 시 중단된 작업 정리)
+      - PROXCENTER_INSTANCE_ID=${MOAVI_INSTANCE_ID:-moavi-frontend}
+      # 세션 유지 시간(초). 비우면 기본값: 무활동 12시간, 최대 7일
+      - SESSION_IDLE_TIMEOUT=${SESSION_IDLE_TIMEOUT:-}
+      - SESSION_ABSOLUTE_TIMEOUT=${SESSION_ABSOLUTE_TIMEOUT:-}
+      # 클라우드 이미지 카탈로그: 내부 미러 주소, 격리망은 TEMPLATE_CATALOG_AUTO_UPDATE=false
+      - TEMPLATE_CATALOG_URL=${TEMPLATE_CATALOG_URL:-}
+      - TEMPLATE_CATALOG_AUTO_UPDATE=${TEMPLATE_CATALOG_AUTO_UPDATE:-}
+      # 첫 관리자 생성 화면 보호용 공유 비밀값 (비우면 사용 안 함)
+      - PROXCENTER_SETUP_TOKEN=${MOAVI_SETUP_TOKEN:-}
+      - ORCHESTRATOR_URL=http://orchestrator:8080
+      - ORCHESTRATOR_API_KEY=${ORCHESTRATOR_API_KEY:-}
+      - PROXCENTER_REPORTING_URL=http://weasyprint:5000
+      # VMware 무중단(warm) 마이그레이션용 VDDK 패키지 레지스트리 토큰·위치
+      - GHCR_TOKEN=${GHCR_TOKEN:-}
+      - PROXCENTER_VDDK_PACKAGE=${VDDK_PACKAGE:-}
+      - PROXCENTER_VDDK_TAG=${VDDK_TAG:-}
+      # Proxmox API 제한 시간(ms). 비우면 기본값 8000 / 30000
+      - PVE_TIMEOUT_MS=${PVE_TIMEOUT_MS:-}
+      - PVE_SLOW_READ_TIMEOUT_MS=${PVE_SLOW_READ_TIMEOUT_MS:-}
+      # 오프라인 마이그레이션에서 루트 파일시스템 선택 대기 시간(ms). 기본 2시간
+      - V2V_ROOT_CHOICE_TIMEOUT_MS=${V2V_ROOT_CHOICE_TIMEOUT_MS:-}
+    volumes:
+      - app_data:/app/data
+      - orchestrator_data:/app/orchestrator_data:ro
+    networks:
+      - moavi
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ---------- 데이터베이스 ----------
+  postgres:
+    image: postgres:16-alpine
+    container_name: moavi-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-proxcenter}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 가 필요합니다 (.env)}
+      - POSTGRES_DB=${POSTGRES_DB:-proxcenter}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --locale=C
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # 외부에 열지 않음 (내부 네트워크 전용)
+    networks:
+      - moavi
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-proxcenter} -d ${POSTGRES_DB:-proxcenter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------- Enterprise 백엔드 ----------
+  orchestrator:
+    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-orchestrator:${VERSION}
+    container_name: moavi-orchestrator
+    restart: unless-stopped
+    ports:
+      - "6343:6343/udp"   # sFlow 수집 (OVS 에이전트)
+    environment:
+      - APP_SECRET=${APP_SECRET}
+      - LICENSE_KEY=${LICENSE_KEY:-}
+      - PROXCENTER_API_API_KEY=${ORCHESTRATOR_API_KEY:-}
+      - LOG_LEVEL=info
+      - LOG_FORMAT=json
+      - TZ=${TZ:-Asia/Seoul}
+      - PROXCENTER_DATABASE_DRIVER=postgres
+      - PROXCENTER_DATABASE_DSN=postgres://${POSTGRES_USER:-proxcenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-proxcenter}?sslmode=disable
+      - PROXCENTER_SFLOW_ENABLED=true
+      - PROXCENTER_SFLOW_LISTEN_ADDRESS=0.0.0.0:6343
+      - PROXCENTER_REPORTING_URL=http://weasyprint:5000
+    volumes:
+      - orchestrator_data:/app/data
+      - app_data:/app/shared_data:ro
+      - ./config/orchestrator.yaml:/app/config.yaml:ro
+    networks:
+      - moavi
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # 화면 쪽 DB 마이그레이션이 끝난 뒤 기동
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ---------- PDF 변환 ----------
+  weasyprint:
+    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-weasyprint:${VERSION}
+    container_name: moavi-weasyprint
+    restart: unless-stopped
+    networks:
+      - moavi
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:5000/health',timeout=3); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  moavi:
+    driver: bridge
+    name: moavi
+
+# 볼륨은 설치 스크립트가 미리 만듦 (external) — compose down 으로 데이터가 지워지지 않게
+volumes:
+  app_data:
+    name: ${APP_DATA_VOLUME:-proxcenter_data}
+    external: true
+  orchestrator_data:
+    name: orchestrator_data
+    external: true
+  postgres_data:
+    name: postgres_data
+    external: true
