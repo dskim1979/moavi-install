@@ -350,6 +350,23 @@ migrate_legacy() {
 # ============================================
 # 4. 구성
 # ============================================
+# PDF 보고서 한글 글꼴 (나눔고딕·나눔명조, SIL OFL) — weasyprint 컨테이너에 읽기 전용으로 연결
+install_fonts() {
+    local dir="$INSTALL_DIR/fonts" base="https://raw.githubusercontent.com/google/fonts/main/ofl" f ok=true
+    mkdir -p "$dir"
+    for f in nanumgothic/NanumGothic-Regular.ttf nanumgothic/NanumGothic-Bold.ttf nanumgothic/NanumGothic-ExtraBold.ttf \
+             nanummyeongjo/NanumMyeongjo-Regular.ttf nanummyeongjo/NanumMyeongjo-Bold.ttf; do
+        [ -s "$dir/${f#*/}" ] && continue
+        if ! curl -fsSL --retry 2 "$base/$f" -o "$dir/${f#*/}.tmp" 2>>"$LOG_FILE"; then
+            rm -f "$dir/${f#*/}.tmp"; ok=false; continue
+        fi
+        mv "$dir/${f#*/}.tmp" "$dir/${f#*/}"
+    done
+    chmod 755 "$dir"; chmod 644 "$dir"/*.ttf 2>/dev/null || true
+    if $ok; then log_success "보고서 한글 글꼴(나눔) 준비"
+    else log_warning "한글 글꼴 일부를 받지 못했습니다 — PDF 보고서 한글이 깨질 수 있습니다 (다시 --upgrade 하면 재시도)"; fi
+}
+
 write_compose() {
     cd "$INSTALL_DIR"
     local url="$COMPOSE_URL_BASE/$UPSTREAM_TAG/docker-compose.enterprise.yml"
@@ -375,7 +392,10 @@ services:
     container_name: moavi-orchestrator
   weasyprint:
     container_name: moavi-weasyprint
+    volumes:
+      - ./fonts:/usr/share/fonts/truetype/moavi:ro
 EOF
+    install_fonts
 
     # HTTPS: nginx(moavi-proxy)가 443 으로 받아 frontend 로 전달, 3000 은 서버 내부(127.0.0.1)에서만
     if [ "$HTTPS" = "true" ]; then
