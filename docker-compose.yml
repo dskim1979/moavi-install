@@ -121,7 +121,7 @@ services:
 
   # ---------- PDF 변환 ----------
   weasyprint:
-    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-weasyprint:${VERSION}
+    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-weasyprint:${MOAVI_VERSION:-latest}
     container_name: moavi-weasyprint
     restart: unless-stopped
     networks:

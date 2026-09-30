@@ -16,7 +16,7 @@ set -e
 
 # ---- 릴리스마다 갱신하는 값 ----
 MOAVI_VERSION_DEFAULT="latest"      # moavi-frontend 이미지 태그
-UPSTREAM_TAG_DEFAULT="v1.4.10"      # 백엔드(moavi-orchestrator/moavi-weasyprint) 버전 — MOAVI 릴리스와 짝을 맞춤
+UPSTREAM_TAG_DEFAULT="v1.4.10"      # moavi-orchestrator 버전 (weasyprint 는 MOAVI 버전을 따름)
 MOAVI_REGISTRY="ghcr.io/dskim1979"
 MOAVI_REGISTRY_USER="dskim1979"
 MOAVI_INSTALL_BASE="https://raw.githubusercontent.com/dskim1979/moavi-install/main"
@@ -117,6 +117,7 @@ EOF
 LICENSE_KEY=""
 MOAVI_TOKEN=""
 MOAVI_VERSION="$MOAVI_VERSION_DEFAULT"
+VERSION_GIVEN=false           # 업그레이드에서 --version 이 없으면 설치된 버전(.env) 유지
 UPSTREAM_TAG="$UPSTREAM_TAG_DEFAULT"
 UPGRADE_MODE=false
 HTTPS=""                      # 비우면: 신규 설치는 HTTPS, 업그레이드는 기존 설정 유지
@@ -128,7 +129,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --token|--moavi-token) MOAVI_TOKEN="$2"; shift 2 ;;
         --license)     LICENSE_KEY="$2"; shift 2 ;;
-        --version)     MOAVI_VERSION="$2"; shift 2 ;;
+        --version)     MOAVI_VERSION="$2"; VERSION_GIVEN=true; shift 2 ;;
         --upstream)    UPSTREAM_TAG="$2"; shift 2 ;;
         --upgrade)     UPGRADE_MODE=true; shift ;;
         --https)       HTTPS=true; shift ;;
@@ -210,6 +211,10 @@ preflight_checks() {
     if [ "$UPGRADE_MODE" = "true" ]; then
         [ -f "$ENV_FILE" ] || log_error "$INSTALL_DIR 에 기존 설치가 없습니다. --upgrade 없이 신규 설치하세요."
         [ -n "$MOAVI_TOKEN" ] || MOAVI_TOKEN=$(get_env MOAVI_GHCR_TOKEN)
+        # --version 없이 업그레이드하면 설치된 버전 채널(latest·main·1.0.1 등)을 유지하고 그 최신 이미지를 받음
+        if [ "$VERSION_GIVEN" != "true" ] && [ "$OFFLINE" != "true" ] && [ -n "$(get_env MOAVI_VERSION)" ]; then
+            MOAVI_VERSION=$(get_env MOAVI_VERSION)
+        fi
     fi
 
     if [ "$OFFLINE" = "true" ]; then
@@ -237,6 +242,9 @@ validate_token() {
         log_info "토큰 생략 — 이 서버의 기존 레지스트리 로그인을 사용합니다"
         return 0
     fi
+
+    [[ "$MOAVI_TOKEN" =~ ^(ghp_|github_pat_) ]] \
+        || log_error "MOAVI 설치 토큰 형식이 아닙니다 (ghp_ 로 시작) — 이전 방식의 설치 토큰은 더 이상 쓰지 않습니다. (주)매커스시스템즈에 MOAVI 설치 토큰을 요청하세요"
 
     local code
     code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 15 -u "$MOAVI_REGISTRY_USER:$MOAVI_TOKEN" \
