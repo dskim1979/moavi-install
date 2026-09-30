@@ -399,29 +399,6 @@ configure_docker_proxy() {
 # ============================================
 # 4. 구성
 # ============================================
-# PDF 보고서 한글 글꼴 (나눔고딕·나눔명조, SIL OFL) — weasyprint 컨테이너에 읽기 전용으로 연결
-install_fonts() {
-    local dir="$INSTALL_DIR/fonts" base="https://raw.githubusercontent.com/google/fonts/main/ofl" f ok=true
-    mkdir -p "$dir"
-    if [ "$OFFLINE" = "true" ]; then
-        cp -f "$OFFLINE_DIR"/fonts/*.ttf "$dir"/ 2>/dev/null || log_warning "번들에 한글 글꼴이 없습니다 — PDF 보고서 한글이 깨질 수 있습니다"
-        chmod 755 "$dir"; chmod 644 "$dir"/*.ttf 2>/dev/null || true
-        log_success "보고서 한글 글꼴(나눔) 준비 (번들)"
-        return 0
-    fi
-    for f in nanumgothic/NanumGothic-Regular.ttf nanumgothic/NanumGothic-Bold.ttf nanumgothic/NanumGothic-ExtraBold.ttf \
-             nanummyeongjo/NanumMyeongjo-Regular.ttf nanummyeongjo/NanumMyeongjo-Bold.ttf; do
-        [ -s "$dir/${f#*/}" ] && continue
-        if ! curl -fsSL --retry 2 "$base/$f" -o "$dir/${f#*/}.tmp" 2>>"$LOG_FILE"; then
-            rm -f "$dir/${f#*/}.tmp"; ok=false; continue
-        fi
-        mv "$dir/${f#*/}.tmp" "$dir/${f#*/}"
-    done
-    chmod 755 "$dir"; chmod 644 "$dir"/*.ttf 2>/dev/null || true
-    if $ok; then log_success "보고서 한글 글꼴(나눔) 준비"
-    else log_warning "한글 글꼴 일부를 받지 못했습니다 — PDF 보고서 한글이 깨질 수 있습니다 (다시 --upgrade 하면 재시도)"; fi
-}
-
 write_compose() {
     cd "$INSTALL_DIR"
     if [ "$OFFLINE" = "true" ]; then
@@ -435,15 +412,12 @@ write_compose() {
     fi
     mv docker-compose.yml.new docker-compose.yml
 
-    # 설치별 추가 구성: 보고서 한글 글꼴, (HTTPS 일 때) 프록시
+    # 설치별 추가 구성: (HTTPS 일 때) 프록시. 보고서 한글 글꼴은 moavi-weasyprint 이미지에 포함
     cat > docker-compose.moavi.yml << 'EOF'
 # MOAVI 추가 구성 (install-moavi.sh 가 생성 — 직접 수정하지 마세요)
 services:
-  weasyprint:
-    volumes:
-      - ./fonts:/usr/share/fonts/truetype/moavi:ro
 EOF
-    install_fonts
+    rm -rf "$INSTALL_DIR/fonts"   # 이전 버전이 받아 두던 글꼴 폴더 (이제 쓰지 않음)
 
     # HTTPS: nginx(moavi-proxy)가 443 으로 받아 frontend 로 전달, 3000 은 서버 내부(127.0.0.1)에서만
     if [ "$HTTPS" = "true" ]; then
@@ -469,6 +443,7 @@ EOF
       - moavi
 EOF
     fi
+    [ "$HTTPS" = "true" ] || sed -i "s/^services:$/services: {}/" docker-compose.moavi.yml
     log_success "compose 구성 저장"
 }
 

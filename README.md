@@ -55,7 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/instal
 ## 격리망(오프라인) 설치
 
 인터넷이 되지 않는 망분리·폐쇄망 환경은 (주)매커스시스템즈가 제공하는 **오프라인 번들**(`moavi-offline-<버전>.tar`)로 설치합니다.
-번들에는 설치 스크립트, 컨테이너 이미지, Docker, 한글 글꼴이 모두 들어 있어 설치 중 인터넷에 접속하지 않습니다.
+번들에는 설치 스크립트, 컨테이너 이미지(PDF 보고서 한글 글꼴 포함), Docker 가 모두 들어 있어 설치 중 인터넷에 접속하지 않습니다.
 
 1. 번들과 SHA256 값을 기관 반입 절차(망연계 자료전송·백신 검사)로 반입합니다.
 2. 설치 서버(디스크 여유 15GB 이상)에서:
@@ -80,7 +80,7 @@ sudo bash moavi-offline-1.0.1/install-moavi.sh --offline moavi-offline-1.0.1 --l
 - Proxmox VE 8.x / 9.x
 
 Docker가 없으면 설치 스크립트가 함께 설치합니다.
-PDF 보고서용 한글 글꼴(나눔고딕·나눔명조)도 설치 중 받습니다 (raw.githubusercontent.com 접근 필요).
+PDF 보고서용 한글 글꼴은 MOAVI 이미지에 포함되어 있습니다.
 
 ## 관리
 
