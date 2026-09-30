@@ -41,7 +41,8 @@ curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/instal
 curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/install-moavi.sh | sudo bash -s -- --upgrade
 ```
 
-설정과 데이터는 유지됩니다. 특정 버전으로 맞추려면 `--version 1.0.1` 처럼 지정합니다.
+설정과 데이터는 유지되고, 설치된 버전의 최신 이미지로 갱신됩니다. 특정 버전으로 바꾸려면 `--version 1.0.1` 처럼 지정합니다.
+설치 토큰은 설치 때 저장되므로 업그레이드에는 필요 없습니다.
 
 ## 프록시 환경
 
@@ -66,7 +67,8 @@ sudo bash moavi-offline-1.0.1/install-moavi.sh --offline moavi-offline-1.0.1 --l
 
 - 설치 스크립트가 번들의 SHA256 을 확인하고, Docker 가 없으면 번들의 Docker 를 설치합니다.
 - HTTPS·인증서 옵션은 온라인 설치와 같습니다 (`--cert`, `--key`, `--domain`).
-- 업그레이드: 새 번들을 풀고 `sudo bash moavi-offline-<새 버전>/install-moavi.sh --offline moavi-offline-<새 버전> --upgrade`
+- 설치 토큰은 필요 없습니다 (이미지가 번들에 들어 있음).
+- 업그레이드: 새 번들을 풀고 `sudo bash moavi-offline-<새 버전>/install-moavi.sh --offline moavi-offline-<새 버전> --upgrade` — 번들의 버전으로 바뀌고 설정·데이터는 유지됩니다.
 
 번들 요청: support@makussystems.co.kr
 

@@ -676,6 +676,9 @@ upgrade_moavi() {
     step 4 "구성 갱신 (업그레이드)"
     cd "$INSTALL_DIR"
     cp -p .env ".env.bak.$(date +%Y%m%d-%H%M%S)"
+    # 백업은 최근 5개만 유지
+    ls -1t .env.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
+    ls -1t docker-compose.yml.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
     resolve_access
     write_compose
 
