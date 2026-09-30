@@ -690,11 +690,23 @@ pull_and_init() {
 
     # 모든 이미지를 MOAVI 레지스트리(frontend·orchestrator·weasyprint)와 공개 레지스트리(postgres·nginx)에서 받음
     log_info "이미지 받는 중 (몇 분 걸릴 수 있습니다)..."
-    if ! docker compose pull >> "$LOG_FILE" 2>&1; then
-        if grep -qiE 'denied|unauthorized|not found' <(tail -20 "$LOG_FILE"); then
-            log_error "MOAVI 이미지를 받지 못했습니다 — MOAVI 설치 토큰이 필요합니다: --token <MOAVI 설치 토큰> (업그레이드도 처음 한 번은 필요)"
+    # 일시적 오류(네트워크 끊김, 같은 서버의 이미지 정리와 겹친 압축 해제 실패 등)는 한 번 다시 시도
+    if ! docker compose pull --quiet >> "$LOG_FILE" 2>&1; then
+        log_warning "이미지 받기 실패 — 10초 후 다시 시도합니다"
+        sleep 10
+        if ! docker compose pull --quiet >> "$LOG_FILE" 2>&1; then
+            local reason
+            reason=$(tail -n 20 "$LOG_FILE" | grep -iE 'error|denied|unauthorized|not found|unknown|failed|no space' | tail -n 2 | cut -c1-240)
+            [ -z "$reason" ] || echo "$reason" | sed 's/^/    | /'
+            if echo "$reason" | grep -qiE 'denied|unauthorized'; then
+                log_error "MOAVI 이미지를 받을 권한이 없습니다 — --token <MOAVI 설치 토큰> 으로 다시 실행하세요"
+            elif echo "$reason" | grep -qiE 'manifest unknown|not found'; then
+                log_error "MOAVI $MOAVI_VERSION 이미지가 레지스트리에 없습니다 — 버전(--version)을 확인하세요"
+            elif echo "$reason" | grep -qiE 'no space'; then
+                log_error "디스크 공간이 부족합니다 — df -h / 확인 후 docker image prune -a 로 정리하세요"
+            fi
+            log_error "이미지를 받지 못했습니다 (로그: $LOG_FILE)"
         fi
-        log_error "이미지를 받지 못했습니다 (로그: $LOG_FILE)"
     fi
     log_success "이미지 받기 완료"
     init_volumes
