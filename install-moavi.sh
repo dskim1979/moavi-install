@@ -16,7 +16,7 @@ set -e
 
 # ---- 릴리스마다 갱신하는 값 ----
 MOAVI_VERSION_DEFAULT="latest"      # moavi-frontend 이미지 태그
-UPSTREAM_TAG_DEFAULT="v1.4.10"      # moavi-orchestrator 버전 (weasyprint 는 MOAVI 버전을 따름)
+UPSTREAM_TAG_DEFAULT="v1.4.11"      # moavi-orchestrator 버전 (weasyprint 는 MOAVI 버전을 따름)
 MOAVI_REGISTRY="ghcr.io/dskim1979"
 MOAVI_REGISTRY_USER="dskim1979"
 MOAVI_INSTALL_BASE="https://raw.githubusercontent.com/dskim1979/moavi-install/main"
@@ -597,6 +597,9 @@ MOAVI_REGISTRY=$MOAVI_REGISTRY
 MOAVI_VERSION=$MOAVI_VERSION
 VERSION=$UPSTREAM_TAG
 
+# 격리망(인터넷 없음) 설치면 true — 버전 확인·카탈로그 갱신을 하지 않음
+PROXCENTER_OFFLINE=$([ "$OFFLINE" = "true" ] && echo true)
+
 # 보안 키
 APP_SECRET=$APP_SECRET
 NEXTAUTH_SECRET=$NEXTAUTH_SECRET
@@ -663,6 +666,8 @@ upgrade_moavi() {
     set_env VERSION "$UPSTREAM_TAG"
     set_env MOAVI_GHCR_TOKEN "$MOAVI_TOKEN"
     [ -z "$LICENSE_KEY" ] || set_env LICENSE_KEY "$LICENSE_KEY"
+    # 격리망 번들로 업그레이드하면 격리망 표시 (인터넷 업그레이드는 기존 값 유지)
+    [ "$OFFLINE" != "true" ] || set_env PROXCENTER_OFFLINE true
 
     # 구버전 설치에 없던 필수 값 보충
     grep -q '^POSTGRES_PASSWORD=' .env || set_env POSTGRES_PASSWORD "$(openssl rand -hex 24)"

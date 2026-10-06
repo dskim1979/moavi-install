@@ -30,6 +30,8 @@ services:
       # 클라우드 이미지 카탈로그: 내부 미러 주소, 격리망은 TEMPLATE_CATALOG_AUTO_UPDATE=false
       - TEMPLATE_CATALOG_URL=${TEMPLATE_CATALOG_URL:-}
       - TEMPLATE_CATALOG_AUTO_UPDATE=${TEMPLATE_CATALOG_AUTO_UPDATE:-}
+      # 격리망 설치: 버전 확인·카탈로그 갱신 안 함, 지도는 타일이 없는 이유 표시 (install-moavi.sh --offline 이 true 로 씀)
+      - PROXCENTER_OFFLINE=${PROXCENTER_OFFLINE:-}
       # 첫 관리자 생성 화면 보호용 공유 비밀값 (비우면 사용 안 함)
       - PROXCENTER_SETUP_TOKEN=${MOAVI_SETUP_TOKEN:-}
       - ORCHESTRATOR_URL=http://orchestrator:8080
@@ -100,6 +102,11 @@ services:
       - PROXCENTER_SFLOW_ENABLED=true
       - PROXCENTER_SFLOW_LISTEN_ADDRESS=0.0.0.0:6343
       - PROXCENTER_REPORTING_URL=http://weasyprint:5000
+      # MOAVI: 원제작자 라이선스 포털(proxcenter.io)에 접속하지 않음 — 연결·자동 갱신 없이 매커스가 발급한 라이선스 파일·키만
+      - PROXCENTER_OFFLINE=true
+      # CVE 점검 자료: 비우면 공개 Debian 서버, 격리망은 내부 미러 주소
+      - PROXCENTER_CVE_FEED_URL=${CVE_FEED_URL:-}
+      - PROXCENTER_CVE_DEBIAN_MIRROR=${CVE_DEBIAN_MIRROR:-}
     volumes:
       - orchestrator_data:/app/data
       - app_data:/app/shared_data:ro
