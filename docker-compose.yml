@@ -140,6 +140,21 @@ services:
       retries: 3
       start_period: 15s
 
+  # ---------- Pure Storage Fusion MCP (선택 — .env 에 COMPOSE_PROFILES=pure) ----------
+  #  AI 운영 도우미·AI 정기 점검이 FlashArray·FlashBlade 를 조회 (설정 > MCP 연동에 http://fusion-mcp:8080/mcp 등록)
+  #  이 서버는 인증이 없으므로 포트를 밖으로 열지 않고 MOAVI 내부망에서만 씀
+  #  이미지는 MOAVI 가 원본 소스로 빌드(moavi-fusion-mcp). 어레이 API 토큰이 든 auth-config.json 은 설치 폴더의 fusion-mcp/
+  #  설정 만들기: docker compose run --rm fusion-mcp generate-config ... → docs/pure-storage-mcp.md
+  fusion-mcp:
+    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-fusion-mcp:${MOAVI_VERSION:-latest}
+    container_name: moavi-fusion-mcp
+    restart: unless-stopped
+    profiles: ["pure"]
+    volumes:
+      - ./fusion-mcp:/fusion
+    networks:
+      - moavi
+
 networks:
   moavi:
     driver: bridge
