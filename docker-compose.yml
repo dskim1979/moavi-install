@@ -49,6 +49,8 @@ services:
     volumes:
       - app_data:/app/data
       - orchestrator_data:/app/orchestrator_data:ro
+      # Pure Storage 어레이 설정 요청을 fusion-mcp 와 주고받는 폴더 (설정 > MCP 연동 > Pure Storage)
+      - fusion_mcp:/app/data/fusion-mcp
     networks:
       - moavi
     depends_on:
@@ -140,18 +142,16 @@ services:
       retries: 3
       start_period: 15s
 
-  # ---------- Pure Storage Fusion MCP (선택 — .env 에 COMPOSE_PROFILES=pure) ----------
-  #  AI 운영 도우미·AI 정기 점검이 FlashArray·FlashBlade 를 조회 (설정 > MCP 연동에 http://fusion-mcp:8080/mcp 등록)
-  #  이 서버는 인증이 없으므로 포트를 밖으로 열지 않고 MOAVI 내부망에서만 씀
-  #  이미지는 MOAVI 가 원본 소스로 빌드(moavi-fusion-mcp). 어레이 API 토큰이 든 auth-config.json 은 설치 폴더의 fusion-mcp/
-  #  설정 만들기: docker compose run --rm fusion-mcp generate-config ... → docs/pure-storage-mcp.md
+  # ---------- Pure Storage Fusion MCP ----------
+  #  AI 운영 도우미·AI 정기 점검이 FlashArray·FlashBlade 를 조회. 어레이는 화면(설정 > MCP 연동 > Pure Storage)에서 등록
+  #  → 이 컨테이너가 받아 설정을 만들고 서버를 띄움 (등록 전에는 기다리기만 함). 인증이 없는 서버라 포트를 밖으로 열지 않음
+  #  이미지: MOAVI 가 원본 소스로 빌드 (moavi/fusion-mcp, 태그 = Fusion 버전-MOAVI 수정 번호) → docs/pure-storage-mcp.md
   fusion-mcp:
-    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-fusion-mcp:${MOAVI_VERSION:-latest}
+    image: ${MOAVI_REGISTRY:-ghcr.io/dskim1979}/moavi-fusion-mcp:${FUSION_MCP_TAG:-1.2.5-1}
     container_name: moavi-fusion-mcp
     restart: unless-stopped
-    profiles: ["pure"]
     volumes:
-      - ./fusion-mcp:/fusion
+      - fusion_mcp:/data
     networks:
       - moavi
 
@@ -170,4 +170,7 @@ volumes:
     external: true
   postgres_data:
     name: postgres_data
+    external: true
+  fusion_mcp:
+    name: moavi_fusion_mcp
     external: true
