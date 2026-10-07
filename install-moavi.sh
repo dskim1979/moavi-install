@@ -780,6 +780,9 @@ start_and_wait() {
     wait $wait_pid || log_error "orchestrator가 2분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs orchestrator"
 
     if [ "$HTTPS" = "true" ]; then
+        # nginx 는 시작할 때 찾은 frontend 주소를 계속 씀 → frontend 가 새로 만들어져 내부 주소가 바뀌면 502
+        #   (예: 새 컨테이너가 추가돼 주소가 다시 배정될 때) → 업그레이드마다 프록시를 다시 시작해 새 주소를 찾게 함
+        docker compose restart proxy >> "$LOG_FILE" 2>&1 || true
         (
             for _ in $(seq 30); do
                 curl -sk -f https://localhost/api/health > /dev/null 2>&1 && exit 0
