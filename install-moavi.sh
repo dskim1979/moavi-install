@@ -830,6 +830,7 @@ print_summary() {
     echo -e "      ${DIM}docker compose ps          # 상태${NC}"
     echo -e "      ${DIM}docker compose logs -f     # 로그${NC}"
     echo -e "      ${DIM}docker compose down        # 중지${NC}"
+    echo -e "      ${DIM}sudo moavi-support         # 문제 분석용 지원 번들 (기술 지원에 보냄)${NC}"
     echo ""
     if [ "$OFFLINE" = "true" ]; then
         echo -e "    ${DIM}업그레이드: 새 번들을 반입한 뒤 sudo bash install-moavi.sh --offline <새 번들> --upgrade${NC}"
@@ -839,6 +840,111 @@ print_summary() {
     echo ""
     echo -e "    ${DIM}기술 지원: support@makussystems.co.kr${NC}"
     echo ""
+}
+
+# ============================================
+# 지원 번들 명령 (sudo moavi-support) — 문제 분석용 서버 정보를 한 파일로 (비밀값 가림)
+#   컨테이너 로그·상태·자원, 서버 OS·디스크·메모리·포트, 설치 구성(.env·compose — 비밀값 가림), 프록시 설정, 설치 로그
+#   웹 화면의 '설정 > 지원 번들' 과 짝 (화면은 앱 내부 정보, 이것은 서버·컨테이너 정보)
+# ============================================
+install_support_tool() {
+    cat > /usr/local/bin/moavi-support <<'SUPPORT_EOF'
+#!/usr/bin/env bash
+# MOAVI 지원 번들 (서버) — sudo moavi-support [--tail 줄수]
+#   결과: /var/tmp/moavi-support-<서버>-<시각>.tar.gz  → support@makussystems.co.kr
+#   비밀번호·토큰·키 값은 가림. 보내기 전에 tar -tzf 로 목록, tar -xzf 로 내용을 확인할 수 있음
+set -u
+DIR="/opt/moavi"
+TAIL=3000
+[ "${1:-}" = "--tail" ] && [ -n "${2:-}" ] && TAIL="$2"
+[ "$(id -u)" = "0" ] || { echo "root 권한이 필요합니다: sudo moavi-support"; exit 1; }
+STAMP="$(date +%Y%m%d-%H%M%S)"
+NAME="moavi-support-$(hostname -s)-$STAMP"
+OUT="/var/tmp/$NAME"
+mkdir -p "$OUT/logs" "$OUT/inspect"
+chmod 700 "$OUT"
+
+# 비밀값 가리기: KEY=값 / KEY: 값 (비밀번호·토큰·키·비밀), URL 자격 증명, Bearer·PVE 토큰
+red() {
+    sed -E \
+        -e 's/(([A-Za-z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|_KEY|APIKEY|PRIVATE)[A-Za-z0-9_]*)[[:space:]]*[=:][[:space:]]*)[^[:space:]",]+/\1***/Ig' \
+        -e 's#([a-z][a-z0-9+.-]*://)[^/:@[:space:]]+:[^/@[:space:]]+@#\1***:***@#Ig' \
+        -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]+/\1***/Ig' \
+        -e 's/((PVE|PBS)APIToken=)[^[:space:]",]+/\1***/Ig'
+}
+run() { echo "\$ $*"; "$@" 2>&1; echo; }
+
+echo "MOAVI 지원 번들을 만드는 중… (1~2분)"
+{
+    echo "MOAVI 지원 번들 (서버) — $(date -Iseconds)"
+    run hostname -f
+    run cat /etc/os-release
+    run uname -a
+    run uptime
+    run nproc
+    run free -h
+    run df -h
+    run df -i
+    run timedatectl
+    run ip -brief address
+    run ip route
+    run cat /etc/resolv.conf
+} > "$OUT/system.txt" 2>&1
+
+{
+    run docker version
+    run docker info
+    run docker compose version
+    run docker system df
+    run docker images
+    run docker network ls
+    run docker volume ls
+} 2>&1 | red > "$OUT/docker.txt"
+
+if cd "$DIR" 2>/dev/null; then
+    { run docker compose ps -a; } > "$OUT/compose-ps.txt" 2>&1
+    docker compose config 2>&1 | red > "$OUT/compose-config.yml"
+    [ -f .env ] && red < .env > "$OUT/env-masked.txt"
+    ls -la "$DIR" > "$OUT/install-dir.txt" 2>&1
+    [ -f proxy/nginx.conf ] && cp proxy/nginx.conf "$OUT/proxy-nginx.conf"
+    [ -f proxy/ssl/moavi.crt ] && openssl x509 -in proxy/ssl/moavi.crt -noout -subject -issuer -dates -ext subjectAltName > "$OUT/proxy-cert.txt" 2>&1
+fi
+
+docker stats --no-stream > "$OUT/docker-stats.txt" 2>&1
+for c in $(docker ps -a --format '{{.Names}}' | grep -E '^moavi-|^proxcenter' ); do
+    docker logs --timestamps --tail "$TAIL" "$c" 2>&1 | red > "$OUT/logs/$c.log"
+    docker inspect "$c" 2>&1 | red > "$OUT/inspect/$c.json"
+    docker inspect -f '{{.Name}} status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}} exit={{.State.ExitCode}} health={{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" >> "$OUT/containers.txt" 2>&1
+done
+
+{
+    run ss -tlnup
+    echo "\$ 웹 응답 (https://127.0.0.1)"
+    curl -sk -o /dev/null -w "HTTP %{http_code} %{time_total}s\n" --max-time 15 https://127.0.0.1/ 2>&1
+    echo "\$ 웹 응답 (http://127.0.0.1:3000)"
+    curl -s -o /dev/null -w "HTTP %{http_code} %{time_total}s\n" --max-time 15 http://127.0.0.1:3000/ 2>&1
+} > "$OUT/network.txt" 2>&1
+
+[ -f /var/log/moavi-install.log ] && tail -n 1000 /var/log/moavi-install.log | red > "$OUT/install.log"
+journalctl -u docker --since "-2 days" --no-pager 2>/dev/null | tail -n 1000 > "$OUT/docker-daemon.log"
+dmesg -T 2>/dev/null | tail -n 300 > "$OUT/dmesg.txt"
+
+cat > "$OUT/README.txt" <<EOF
+MOAVI 지원 번들 (서버) — $(date -Iseconds)
+비밀번호·토큰·키 값은 '***' 로 가렸습니다. 보내기 전에 내용을 확인할 수 있습니다.
+화면 쪽 정보(연결 진단·설정 등)는 웹 화면 '설정 > 지원 번들' 에서 따로 만듭니다.
+보낼 곳: support@makussystems.co.kr
+EOF
+
+tar -czf "$OUT.tar.gz" -C /var/tmp "$NAME" && rm -rf "$OUT"
+chmod 600 "$OUT.tar.gz"
+echo
+echo "완료: $OUT.tar.gz ($(du -h "$OUT.tar.gz" | cut -f1))"
+echo "  내용 확인: tar -tzf $OUT.tar.gz"
+echo "  보낼 곳  : support@makussystems.co.kr (문제가 생긴 시각과 증상을 함께)"
+SUPPORT_EOF
+    chmod 755 /usr/local/bin/moavi-support
+    log_success "지원 번들 명령 설치: sudo moavi-support"
 }
 
 main() {
@@ -853,6 +959,7 @@ main() {
     if [ "$UPGRADE_MODE" = "true" ]; then upgrade_moavi; else setup_moavi; fi
     pull_and_init
     start_and_wait
+    install_support_tool || log_warning "지원 번들 명령(moavi-support)을 설치하지 못했습니다"
     print_summary
 }
 
