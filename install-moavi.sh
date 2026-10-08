@@ -867,7 +867,10 @@ chmod 700 "$OUT"
 # 비밀값 가리기: KEY=값 / KEY: 값 (비밀번호·토큰·키·비밀), URL 자격 증명, Bearer·PVE 토큰
 red() {
     sed -E \
-        -e 's/(([A-Za-z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|_KEY|APIKEY|PRIVATE)[A-Za-z0-9_]*)[[:space:]]*[=:][[:space:]]*)[^[:space:]",]+/\1***/Ig' \
+        -e 's/(([A-Za-z0-9_]*(PASSWORD|PASSWD|SSHPASS|SECRET|TOKEN|_KEY|APIKEY|PRIVATE)[A-Za-z0-9_]*)[[:space:]]*[=:][[:space:]]*)\x27[^\x27]*\x27/\1***/Ig' \
+        -e 's/(([A-Za-z0-9_]*(PASSWORD|PASSWD|SSHPASS|SECRET|TOKEN|_KEY|APIKEY|PRIVATE)[A-Za-z0-9_]*)[[:space:]]*[=:][[:space:]]*)"[^"]*"/\1***/Ig' \
+        -e 's/(([A-Za-z0-9_]*(PASSWORD|PASSWD|SSHPASS|SECRET|TOKEN|_KEY|APIKEY|PRIVATE)[A-Za-z0-9_]*)[[:space:]]*[=:][[:space:]]*)[^[:space:]",]+/\1***/Ig' \
+        -e 's/(sshpass[[:space:]]+-p[[:space:]]*)[^[:space:]]+/\1***/Ig' \
         -e 's#([a-z][a-z0-9+.-]*://)[^/:@[:space:]]+:[^/@[:space:]]+@#\1***:***@#Ig' \
         -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]+/\1***/Ig' \
         -e 's/((PVE|PBS)APIToken=)[^[:space:]",]+/\1***/Ig'
