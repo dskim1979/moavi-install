@@ -850,14 +850,53 @@ print_summary() {
 install_support_tool() {
     cat > /usr/local/bin/moavi-support <<'SUPPORT_EOF'
 #!/usr/bin/env bash
-# MOAVI 지원 번들 (서버) — sudo moavi-support [--tail 줄수]
+# MOAVI 지원 번들 (서버) — sudo moavi-support [--since 시각] [--until 시각] [--days 일수] [--tail 줄수|all]
+#   기간을 주면 컨테이너 로그·Docker·커널 로그를 그 기간만 (최대 7일). 시각 예: "2026-10-08 09:00", "2026-10-08T09:00:00+09:00"
+#   기간이 없으면 컨테이너마다 최근 3000줄
 #   결과: /var/tmp/moavi-support-<서버>-<시각>.tar.gz  → support@makussystems.co.kr
 #   비밀번호·토큰·키 값은 가림. 보내기 전에 tar -tzf 로 목록, tar -xzf 로 내용을 확인할 수 있음
 set -u
 DIR="/opt/moavi"
-TAIL=3000
-[ "${1:-}" = "--tail" ] && [ -n "${2:-}" ] && TAIL="$2"
+TAIL=""
+SINCE=""
+UNTIL=""
+DAYS=""
+MAX_RANGE=604800   # 7일
+usage() { echo "사용법: sudo moavi-support [--since \"YYYY-MM-DD HH:MM\"] [--until \"YYYY-MM-DD HH:MM\"] [--days 1~7] [--tail 줄수|all]"; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --tail)  TAIL="${2:-}"; shift 2 ;;
+        --since) SINCE="${2:-}"; shift 2 ;;
+        --until) UNTIL="${2:-}"; shift 2 ;;
+        --days)  DAYS="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "알 수 없는 옵션: $1"; usage; exit 1 ;;
+    esac
+done
 [ "$(id -u)" = "0" ] || { echo "root 권한이 필요합니다: sudo moavi-support"; exit 1; }
+S_EPOCH=""; U_EPOCH=""
+if [ -n "$SINCE$UNTIL$DAYS" ]; then
+    U_EPOCH="$(date +%s)"
+    if [ -n "$UNTIL" ]; then U_EPOCH="$(date -d "$UNTIL" +%s 2>/dev/null)" || { echo "--until 시각을 읽지 못했습니다: $UNTIL"; exit 1; }; fi
+    if [ -n "$SINCE" ]; then
+        S_EPOCH="$(date -d "$SINCE" +%s 2>/dev/null)" || { echo "--since 시각을 읽지 못했습니다: $SINCE"; exit 1; }
+    elif [ -n "$DAYS" ]; then
+        case "$DAYS" in *[!0-9]*|"") echo "--days 는 1~7 숫자"; exit 1 ;; esac
+        S_EPOCH=$(( U_EPOCH - DAYS * 86400 ))
+    else
+        S_EPOCH=$(( U_EPOCH - 86400 ))
+    fi
+    [ "$S_EPOCH" -lt "$U_EPOCH" ] || { echo "시작 시각이 끝 시각보다 늦습니다"; exit 1; }
+    if [ $(( U_EPOCH - S_EPOCH )) -gt "$MAX_RANGE" ]; then
+        S_EPOCH=$(( U_EPOCH - MAX_RANGE ))
+        echo "기간은 최대 7일입니다 — $(date -d "@$S_EPOCH" '+%F %T') 부터로 줄였습니다"
+    fi
+    echo "수집 기간: $(date -d "@$S_EPOCH" '+%F %T %Z') ~ $(date -d "@$U_EPOCH" '+%F %T %Z')"
+    [ -n "$TAIL" ] || TAIL="all"
+fi
+[ -n "$TAIL" ] || TAIL=3000
+LOGOPT=(--timestamps --tail "$TAIL")
+[ -n "$S_EPOCH" ] && LOGOPT+=(--since "$S_EPOCH" --until "$U_EPOCH")
 STAMP="$(date +%Y%m%d-%H%M%S)"
 NAME="moavi-support-$(hostname -s)-$STAMP"
 OUT="/var/tmp/$NAME"
@@ -915,7 +954,7 @@ fi
 
 docker stats --no-stream > "$OUT/docker-stats.txt" 2>&1
 for c in $(docker ps -a --format '{{.Names}}' | grep -E '^moavi-|^proxcenter' ); do
-    docker logs --timestamps --tail "$TAIL" "$c" 2>&1 | red > "$OUT/logs/$c.log"
+    docker logs "${LOGOPT[@]}" "$c" 2>&1 | red > "$OUT/logs/$c.log"
     docker inspect "$c" 2>&1 | red > "$OUT/inspect/$c.json"
     docker inspect -f '{{.Name}} status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}} exit={{.State.ExitCode}} health={{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" >> "$OUT/containers.txt" 2>&1
 done
@@ -929,8 +968,15 @@ done
 } > "$OUT/network.txt" 2>&1
 
 [ -f /var/log/moavi-install.log ] && tail -n 1000 /var/log/moavi-install.log | red > "$OUT/install.log"
-journalctl -u docker --since "-2 days" --no-pager 2>/dev/null | tail -n 1000 > "$OUT/docker-daemon.log"
-dmesg -T 2>/dev/null | tail -n 300 > "$OUT/dmesg.txt"
+if [ -n "$S_EPOCH" ]; then
+    echo "since=$(date -d "@$S_EPOCH" -Iseconds) until=$(date -d "@$U_EPOCH" -Iseconds)" > "$OUT/range.txt"
+    journalctl -u docker --since "@$S_EPOCH" --until "@$U_EPOCH" --no-pager 2>/dev/null | tail -n 20000 > "$OUT/docker-daemon.log"
+    # 커널 로그: 기간 지정 시 저널에서 (dmesg 는 재부팅하면 지워짐)
+    journalctl -k --since "@$S_EPOCH" --until "@$U_EPOCH" --no-pager -o short-iso 2>/dev/null | tail -n 20000 > "$OUT/dmesg.txt"
+else
+    journalctl -u docker --since "-2 days" --no-pager 2>/dev/null | tail -n 1000 > "$OUT/docker-daemon.log"
+    dmesg -T 2>/dev/null | tail -n 300 > "$OUT/dmesg.txt"
+fi
 
 cat > "$OUT/README.txt" <<EOF
 MOAVI 지원 번들 (서버) — $(date -Iseconds)
