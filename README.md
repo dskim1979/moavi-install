@@ -54,23 +54,85 @@ curl -fsSL https://raw.githubusercontent.com/dskim1979/moavi-install/main/instal
 
 ## 격리망(오프라인) 설치
 
-인터넷이 되지 않는 망분리·폐쇄망 환경은 (주)매커스시스템즈가 제공하는 **오프라인 번들**(`moavi-offline-<버전>.tar`)로 설치합니다.
+인터넷이 되지 않는 망분리·폐쇄망 환경은 **오프라인 번들**(`moavi-offline-<버전>.tar`)로 설치합니다.
 번들에는 설치 스크립트, 컨테이너 이미지(PDF 보고서 한글 글꼴 포함), Docker 가 모두 들어 있어 설치 중 인터넷에 접속하지 않습니다.
 
-1. 번들과 SHA256 값을 기관 반입 절차(망연계 자료전송·백신 검사)로 반입합니다.
-2. 설치 서버(디스크 여유 15GB 이상)에서:
-
-```bash
-tar -xf moavi-offline-1.0.1.tar
-sudo bash moavi-offline-1.0.1/install-moavi.sh --offline moavi-offline-1.0.1 --license <라이선스 키>
+```
+[인터넷 되는 PC·서버]  번들 받기 ── moavi-offline-1.1.0.tar + .sha256
+        │  기관 반입 절차 (망연계 자료전송·백신 검사) — 반입 신청서에 SHA256 기재
+        ▼
+[격리망 설치 서버]      SHA256 확인 → 압축 풀기 → 설치
 ```
 
-- 설치 스크립트가 번들의 SHA256 을 확인하고, Docker 가 없으면 번들의 Docker 를 설치합니다.
-- HTTPS·인증서 옵션은 온라인 설치와 같습니다 (`--cert`, `--key`, `--domain`).
-- 설치 토큰은 필요 없습니다 (이미지가 번들에 들어 있음).
-- 업그레이드: 새 번들을 풀고 `sudo bash moavi-offline-<새 버전>/install-moavi.sh --offline moavi-offline-<새 버전> --upgrade` — 번들의 버전으로 바뀌고 설정·데이터는 유지됩니다.
+### 1. 번들 받기
 
-번들 요청: support@makussystems.co.kr
+번들에는 설치 토큰이 있어야 받을 수 있는 MOAVI 이미지가 들어 있어 이 저장소에 파일로 올리지 않습니다. 아래 두 방법 중 하나로 받습니다.
+
+**방법 A — 직접 만들기 (설치 토큰 보유 기관·협력사)**
+
+인터넷이 되는 Linux 서버·PC(x86_64, Docker 설치, 디스크 여유 5GB 이상)에서:
+
+```bash
+git clone https://github.com/dskim1979/moavi-install.git && cd moavi-install
+read -rs TK && sudo bash make-offline-bundle.sh --version 1.1.0 --token "$TK" --out /var/tmp; unset TK
+```
+
+- `read -rs` 에서 설치 토큰을 붙여 넣고 Enter (화면·명령 기록에 남지 않음)
+- git 이 없으면 [ZIP 내려받기](https://github.com/dskim1979/moavi-install/archive/refs/heads/main.zip) 후 압축을 풀고 그 폴더에서 두 번째 줄 실행
+- 결과: `/var/tmp/moavi-offline-1.1.0.tar` (약 0.6~1GB) 와 `/var/tmp/moavi-offline-1.1.0.tar.sha256`
+- `--version` 에는 설치할 MOAVI 버전을 넣습니다 — 버전 목록: [Releases](https://github.com/dskim1979/moavi-install/releases)
+
+**방법 B — 매커스에 요청**
+
+support@makussystems.co.kr 로 기관명·설치할 버전·전달 방법(다운로드 링크 / 매체 직접 전달)을 보내 주세요.
+번들은 기간이 정해진 다운로드 링크로, SHA256 값은 메일로 따로 보내 드립니다.
+
+### 2. 받은 번들 확인 (반입 전)
+
+번들과 `.sha256` 파일이 같은 폴더에 있을 때:
+
+```bash
+sha256sum -c moavi-offline-1.1.0.tar.sha256
+```
+
+`moavi-offline-1.1.0.tar: OK` 가 나와야 합니다. Windows PC 에서는 `certutil -hashfile moavi-offline-1.1.0.tar SHA256` 의 값이 `.sha256` 파일의 값과 같은지 봅니다.
+
+### 3. 설치 (격리망 서버)
+
+번들과 SHA256 값을 기관 반입 절차로 반입한 뒤, 설치 서버(디스크 여유 15GB 이상)에서:
+
+```bash
+tar -xf moavi-offline-1.1.0.tar
+sudo bash moavi-offline-1.1.0/install-moavi.sh --offline moavi-offline-1.1.0 --license <라이선스 키>
+```
+
+- 설치 스크립트가 번들 안의 파일 SHA256 을 다시 확인하고, Docker 가 없으면 번들의 Docker 를 설치합니다.
+- HTTPS·인증서 옵션은 온라인 설치와 같습니다 (`--cert`, `--key`, `--domain`).
+- 설치 토큰은 필요 없습니다 (이미지가 번들에 들어 있음). 라이선스 키는 설치 후 **설정 > 라이선스** 에서 넣어도 됩니다.
+- 설치가 끝나면 `https://<서버 주소>` 에 접속해 첫 관리자 계정을 만듭니다.
+
+### 4. 업그레이드 (격리망)
+
+새 버전 번들을 같은 방법으로 받아 반입한 뒤:
+
+```bash
+tar -xf moavi-offline-<새 버전>.tar
+sudo bash moavi-offline-<새 버전>/install-moavi.sh --offline moavi-offline-<새 버전> --upgrade
+```
+
+번들의 버전으로 바뀌고 설정·데이터는 유지됩니다. 업그레이드 전에 서버 스냅숏(가상머신이면) 또는 백업을 권장합니다.
+
+### 번들 내용
+
+| 파일 | 내용 |
+|---|---|
+| `install-moavi.sh` | 설치 스크립트 (온라인 설치와 같은 파일) |
+| `bundle.env` | 번들 정보 (MOAVI 버전, 이미지 목록, 만든 날짜) |
+| `docker-compose.yml` | MOAVI 구성 |
+| `images.tar.gz` | 컨테이너 이미지 (MOAVI, PDF 변환기, DB, 웹 프록시 등) |
+| `docker/` | Docker 정적 바이너리 + compose 플러그인 (서버에 Docker 가 없을 때) |
+| `SHA256SUMS` | 파일별 해시 — 설치 스크립트가 자동 확인 |
+| `README-OFFLINE.txt` | 기관 담당자용 반입·설치 안내 |
 
 ## 요구 사항
 
