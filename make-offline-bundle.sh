@@ -93,7 +93,13 @@ DC=(docker); [ -z "$DOCKER_CFG" ] || DC=(docker --config "$DOCKER_CFG")
 step "이미지 받기"
 for img in "${IMAGES[@]}"; do
     echo "   pull $img"
-    "${DC[@]}" pull -q "$img" > /dev/null || die "이미지를 받지 못했습니다: $img (MOAVI 이미지는 --token <MOAVI 설치 토큰> 또는 기존 docker 로그인 필요)"
+    # 일시 오류(예: 같은 때 CI 정리 작업과 겹쳐 'unable to lease content')는 잠시 뒤 다시 시도 — 최대 3번
+    ok=""
+    for try_no in 1 2 3; do
+        if "${DC[@]}" pull -q "$img" > /dev/null; then ok=1; break; fi
+        [ "$try_no" -lt 3 ] && { echo "   다시 시도 ($try_no/3)…"; sleep $((try_no * 5)); }
+    done
+    [ -n "$ok" ] || die "이미지를 받지 못했습니다: $img (MOAVI 이미지는 --token <MOAVI 설치 토큰> 또는 기존 docker 로그인 필요, 빌드 서버라면 CI 정리 작업과 겹치지 않을 때 다시 실행)"
 done
 step "이미지 파일 만들기 (images.tar.gz)"
 docker save "${IMAGES[@]}" | gzip -1 > "$B/images.tar.gz"
