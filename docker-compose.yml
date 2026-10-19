@@ -56,12 +56,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # 첫 기동은 DB 초기화·마이그레이션으로 1~3분 걸릴 수 있음 (느린 서버·격리망) — 그동안 '비정상'으로 판정하지 않게
+    #   proxy·orchestrator 가 이 상태(service_healthy)를 기다리므로, 너무 짧으면 설치(docker compose up)가 통째로 실패
+    #   start_period 동안의 실패는 세지 않음 → 그 뒤 15초 × 8회(약 2분) 더 실패해야 비정상
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
-      interval: 30s
+      interval: 15s
       timeout: 10s
-      retries: 3
-      start_period: 30s
+      retries: 8
+      start_period: 180s
 
   # ---------- 데이터베이스 ----------
   postgres:
@@ -123,10 +126,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/api/v1/health"]
-      interval: 30s
+      interval: 15s
       timeout: 10s
-      retries: 3
-      start_period: 15s
+      retries: 8
+      start_period: 90s
 
   # ---------- PDF 변환 ----------
   weasyprint:

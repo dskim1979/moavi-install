@@ -753,12 +753,23 @@ start_and_wait() {
     cd "$INSTALL_DIR"
     local pull_opt=""
     [ "$OFFLINE" = "true" ] && pull_opt="--pull never"   # 격리망: 레지스트리 접속 시도 안 함
-    docker compose up -d --remove-orphans $pull_opt >> "$LOG_FILE" 2>&1 || log_error "컨테이너 기동 실패 (로그: $LOG_FILE)"
+    if ! docker compose up -d --remove-orphans $pull_opt >> "$LOG_FILE" 2>&1; then
+        # 느린 서버에서 frontend 가 정상 판정을 받기 전에 기다리던 proxy·orchestrator 기동이 실패할 수 있음
+        #   → frontend 가 떠 있으면 정상이 될 때까지(최대 5분) 기다렸다가 한 번 더 올림
+        docker ps --format '{{.Names}}' | grep -qx moavi-frontend || log_error "컨테이너 기동 실패 (로그: $LOG_FILE)"
+        log_warning "frontend 준비가 늦어 다시 기동합니다 (첫 설치 DB 초기화)..."
+        for _ in $(seq 150); do
+            [ "$(docker inspect --format='{{.State.Health.Status}}' moavi-frontend 2>/dev/null)" = "healthy" ] && break
+            sleep 2
+        done
+        docker compose up -d --remove-orphans $pull_opt >> "$LOG_FILE" 2>&1 || log_error "컨테이너 기동 실패 (로그: $LOG_FILE)"
+    fi
     log_success "컨테이너 기동"
 
-    log_info "서비스 준비를 기다리는 중..."
+    # 첫 기동은 DB 초기화로 몇 분 걸릴 수 있음 (느린 서버·격리망) → 각 단계 최대 5분 기다림
+    log_info "서비스 준비를 기다리는 중... (첫 설치는 DB 초기화로 몇 분 걸릴 수 있습니다)"
     (
-        for _ in $(seq 60); do
+        for _ in $(seq 150); do
             curl -s -f http://localhost:3000/api/health > /dev/null 2>&1 && exit 0
             sleep 2
         done
@@ -766,10 +777,10 @@ start_and_wait() {
     ) &
     local wait_pid=$!
     spinner $wait_pid "frontend 기동 중..."
-    wait $wait_pid || log_error "frontend가 2분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs frontend"
+    wait $wait_pid || log_error "frontend가 5분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs frontend"
 
     (
-        for _ in $(seq 60); do
+        for _ in $(seq 150); do
             [ "$(docker inspect --format='{{.State.Health.Status}}' moavi-orchestrator 2>/dev/null)" = "healthy" ] && exit 0
             sleep 2
         done
@@ -777,7 +788,7 @@ start_and_wait() {
     ) &
     wait_pid=$!
     spinner $wait_pid "orchestrator 기동 중..."
-    wait $wait_pid || log_error "orchestrator가 2분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs orchestrator"
+    wait $wait_pid || log_error "orchestrator가 5분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs orchestrator"
 
     if [ "$HTTPS" = "true" ]; then
         # nginx 는 시작할 때 찾은 frontend 주소를 계속 씀 → frontend 가 새로 만들어져 내부 주소가 바뀌면 502
