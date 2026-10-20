@@ -16,7 +16,9 @@ set -e
 
 # ---- 릴리스마다 갱신하는 값 ----
 MOAVI_VERSION_DEFAULT="latest"      # moavi-frontend 이미지 태그
-UPSTREAM_TAG_DEFAULT="v1.4.11"      # moavi-orchestrator 버전 (weasyprint 는 MOAVI 버전을 따름)
+UPSTREAM_TAG_DEFAULT="v1.4.12"      # 최신 기반 버전 — moavi-backend 워크플로가 이 orchestrator 를 복제
+                                    # 설치·업그레이드 때는 받을 frontend 이미지의 기반 버전(/app/package.json)을 읽어 맞는 orchestrator 를 고름
+                                    # (MOAVI 1.1.0 → v1.4.11, 이후 → v1.4.12 …) — --upstream 으로 직접 지정 가능
 MOAVI_REGISTRY="ghcr.io/dskim1979"
 MOAVI_REGISTRY_USER="dskim1979"
 MOAVI_INSTALL_BASE="https://raw.githubusercontent.com/dskim1979/moavi-install/main"
@@ -130,7 +132,7 @@ while [[ $# -gt 0 ]]; do
         --token|--moavi-token) MOAVI_TOKEN="$2"; shift 2 ;;
         --license)     LICENSE_KEY="$2"; shift 2 ;;
         --version)     MOAVI_VERSION="$2"; VERSION_GIVEN=true; shift 2 ;;
-        --upstream)    UPSTREAM_TAG="$2"; shift 2 ;;
+        --upstream)    UPSTREAM_TAG="$2"; UPSTREAM_GIVEN=true; shift 2 ;;
         --upgrade)     UPGRADE_MODE=true; shift ;;
         --https)       HTTPS=true; shift ;;
         --no-https)    HTTPS=false; shift ;;
@@ -1007,6 +1009,25 @@ SUPPORT_EOF
     log_success "지원 번들 명령 설치: sudo moavi-support"
 }
 
+# 받을 MOAVI 화면 이미지의 기반(ProxCenter) 버전에 맞는 orchestrator 를 고름
+#   frontend 이미지의 /app/package.json "version" (예 1.4.11) → v1.4.11
+#   MOAVI 1.1.0 은 v1.4.11 기반, v1.4.12 병합 이후 빌드는 v1.4.12 — 화면·백엔드 버전이 어긋나면 DB 구조가 맞지 않음
+#   격리망은 번들의 값(BUNDLE_UPSTREAM_TAG), --upstream 을 주면 그 값
+detect_upstream_tag() {
+    [ "$OFFLINE" = "true" ] && return 0
+    [ "$UPSTREAM_GIVEN" = "true" ] && return 0
+    local img="$MOAVI_REGISTRY/moavi-frontend:$MOAVI_VERSION" ver=""
+    if docker pull -q "$img" >> "$LOG_FILE" 2>&1; then
+        ver=$(docker run --rm --entrypoint cat "$img" /app/package.json 2>/dev/null | sed -n 's/^ *"version": *"\([0-9][0-9.]*\)".*/\1/p' | head -1)
+    fi
+    if [ -n "$ver" ]; then
+        UPSTREAM_TAG="v$ver"
+        log_info "기반 버전: $UPSTREAM_TAG (MOAVI $MOAVI_VERSION 이미지 기준)"
+    else
+        log_warning "기반 버전을 이미지에서 읽지 못해 기본값 $UPSTREAM_TAG 을 씁니다 (다르면 --upstream 으로 지정)"
+    fi
+}
+
 main() {
     print_banner
     mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null && touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/moavi-install.log"
@@ -1016,6 +1037,7 @@ main() {
     install_docker
     configure_docker_proxy
     authenticate_registry
+    detect_upstream_tag
     if [ "$UPGRADE_MODE" = "true" ]; then upgrade_moavi; else setup_moavi; fi
     pull_and_init
     start_and_wait

@@ -20,7 +20,7 @@
 set -euo pipefail
 
 MOAVI_VERSION="latest"
-UPSTREAM_TAG="v1.4.11"            # install-moavi.sh 의 UPSTREAM_TAG_DEFAULT 와 같게
+UPSTREAM_TAG=""                   # 비우면 frontend 이미지의 기반 버전(/app/package.json)으로 자동 — --upstream 으로 직접 지정 가능
 MOAVI_REGISTRY="ghcr.io/dskim1979"
 MOAVI_REGISTRY_USER="dskim1979"      # MOAVI 설치 토큰을 발급한 GitHub 계정 (install-moavi.sh 와 같게)
 PROXY_IMAGE="nginx:1.27-alpine"   # install-moavi.sh 의 HTTPS 프록시 이미지와 같게
@@ -66,6 +66,21 @@ cp "$COMPOSE_SRC" "$B/docker-compose.yml" || die "compose 파일을 찾을 수 �
 mapfile -t PUBLIC_IMAGES < <(grep -E '^\s+image:' "$B/docker-compose.yml" | awk '{print $2}' | tr -d '"'"'" | grep -v 'moavi-' | sort -u)
 if printf '%s\n' "${PUBLIC_IMAGES[@]}" | grep -q '\$'; then die "해석하지 못한 이미지 변수가 있습니다: ${PUBLIC_IMAGES[*]}"; fi
 MOAVI_IMAGE="$MOAVI_REGISTRY/moavi-frontend:$MOAVI_VERSION"
+# 레지스트리 로그인을 먼저 (frontend 이미지에서 기반 버전을 읽어야 orchestrator 버전이 정해짐)
+if [ -n "$TOKEN" ]; then
+    step "MOAVI 레지스트리 로그인"
+    DOCKER_CFG=$(mktemp -d)
+    echo "$TOKEN" | docker --config "$DOCKER_CFG" login "${MOAVI_REGISTRY%%/*}" -u "$MOAVI_REGISTRY_USER" --password-stdin > /dev/null \
+        || die "MOAVI 레지스트리 로그인 실패 (토큰 확인)"
+fi
+DC=(docker); [ -z "$DOCKER_CFG" ] || DC=(docker --config "$DOCKER_CFG")
+if [ -z "$UPSTREAM_TAG" ]; then
+    "${DC[@]}" pull -q "$MOAVI_IMAGE" > /dev/null || die "이미지를 받지 못했습니다: $MOAVI_IMAGE"
+    _v=$(docker run --rm --entrypoint cat "$MOAVI_IMAGE" /app/package.json 2>/dev/null | sed -n 's/^ *"version": *"\([0-9][0-9.]*\)".*/\1/p' | head -1)
+    [ -n "$_v" ] || die "frontend 이미지에서 기반 버전을 읽지 못했습니다 — --upstream v1.4.x 로 지정하세요"
+    UPSTREAM_TAG="v$_v"
+    echo "   기반 버전: $UPSTREAM_TAG (frontend 이미지 기준)"
+fi
 # Pure Storage Fusion MCP: 태그 = Fusion 버전-MOAVI 수정 번호 (moavi/fusion-mcp/Dockerfile)
 FUSION_DF="$SCRIPT_DIR/../fusion-mcp/Dockerfile"
 if [ -f "$FUSION_DF" ]; then
@@ -79,15 +94,7 @@ case "$FUSION_TAG" in ""|-*|*-) die "Fusion MCP 이미지 버전을 알 수 없�
 IMAGES=("$MOAVI_IMAGE" "$MOAVI_REGISTRY/moavi-orchestrator:$UPSTREAM_TAG" "$MOAVI_REGISTRY/moavi-weasyprint:$MOAVI_VERSION" "$MOAVI_REGISTRY/moavi-fusion-mcp:$FUSION_TAG" "${PUBLIC_IMAGES[@]}" "$PROXY_IMAGE")
 printf '   %s\n' "${IMAGES[@]}"
 
-# ---------- 레지스트리 로그인 ----------
-# --token: MOAVI 설치 토큰(GHCR 읽기 전용). 생략하면 이 서버의 기존 docker 로그인 사용
-if [ -n "$TOKEN" ]; then
-    step "MOAVI 레지스트리 로그인"
-    DOCKER_CFG=$(mktemp -d)
-    echo "$TOKEN" | docker --config "$DOCKER_CFG" login "${MOAVI_REGISTRY%%/*}" -u "$MOAVI_REGISTRY_USER" --password-stdin > /dev/null \
-        || die "MOAVI 레지스트리 로그인 실패 (토큰 확인)"
-fi
-DC=(docker); [ -z "$DOCKER_CFG" ] || DC=(docker --config "$DOCKER_CFG")
+# (레지스트리 로그인은 위 — 기반 버전을 읽기 전에 함)
 
 # ---------- 이미지 ----------
 step "이미지 받기"
