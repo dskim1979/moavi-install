@@ -12,6 +12,8 @@ set -e
 # - frontend / orchestrator / weasyprint : MOAVI 레지스트리(MOAVI_REGISTRY) — MOAVI 설치 토큰((주)매커스시스템즈 발급)으로 받음
 # - postgres / nginx                     : 공개 이미지
 # - compose 파일                          : MOAVI 설치 저장소(MOAVI_INSTALL_BASE)
+# - 커뮤니티판: make-offline-bundle.sh --edition community 번들로 --offline 설치 (orchestrator 없음, Enterprise 기능 꺼짐)
+#     Enterprise 로 바꾸기는 Enterprise 번들로 --upgrade. Enterprise 설치를 커뮤니티 번들로 바꾸는 것은 막음
 # ============================================
 
 # ---- 릴리스마다 갱신하는 값 ----
@@ -148,6 +150,7 @@ done
 # ---- 격리망 설치: 번들 풀기·검증, 번들에 적힌 버전 사용 ----
 OFFLINE=false
 OFFLINE_DIR=""
+EDITION="enterprise"   # 커뮤니티판 번들이면 community (bundle.env 의 BUNDLE_EDITION)
 if [ -n "${OFFLINE_SRC:-}" ]; then
     OFFLINE=true
     [ "$EUID" -eq 0 ] || log_error "root 권한이 필요합니다 (sudo)"
@@ -171,6 +174,7 @@ if [ -n "${OFFLINE_SRC:-}" ]; then
     MOAVI_VERSION="$BUNDLE_MOAVI_VERSION"
     UPSTREAM_TAG="$BUNDLE_UPSTREAM_TAG"
     MOAVI_REGISTRY="$BUNDLE_MOAVI_REGISTRY"
+    EDITION="${BUNDLE_EDITION:-enterprise}"
 fi
 
 
@@ -586,8 +590,11 @@ setup_moavi() {
     [ -n "$SERVER_IP" ] || SERVER_IP="localhost"
 
     cat > "$INSTALL_DIR/.env" << EOF
-# MOAVI Enterprise
+# MOAVI ($EDITION)
 # 생성: $(date -Iseconds)
+
+# 판: enterprise | community (커뮤니티판은 orchestrator 없음 — 아래 Orchestrator 값은 Enterprise 로 바꿀 때 씀)
+MOAVI_EDITION=$EDITION
 
 COMPOSE_FILE=docker-compose.yml:docker-compose.moavi.yml
 
@@ -659,9 +666,17 @@ upgrade_moavi() {
     # 백업은 최근 5개만 유지
     ls -1t .env.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
     ls -1t docker-compose.yml.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
+    # 판 확인: 값이 없는 기존 설치는 Enterprise. Enterprise → 커뮤니티로 바꾸면 Enterprise 기능·설정이 빠지므로 막음
+    local installed_edition
+    installed_edition=$(get_env MOAVI_EDITION)
+    if [ "$EDITION" = "community" ] && [ "${installed_edition:-enterprise}" != "community" ]; then
+        log_error "Enterprise 설치를 커뮤니티판 번들로 업그레이드할 수 없습니다 — Enterprise 번들을 쓰세요"
+    fi
+    [ "$EDITION" = "enterprise" ] && [ "$installed_edition" = "community" ] && log_info "커뮤니티판 → Enterprise 로 바꿉니다 (설정·데이터 유지)"
     resolve_access
     write_compose
 
+    set_env MOAVI_EDITION "$EDITION"
     set_env COMPOSE_FILE "docker-compose.yml:docker-compose.moavi.yml"
     set_env MOAVI_REGISTRY "$MOAVI_REGISTRY"
     set_env MOAVI_VERSION "$MOAVI_VERSION"
@@ -781,16 +796,18 @@ start_and_wait() {
     spinner $wait_pid "frontend 기동 중..."
     wait $wait_pid || log_error "frontend가 5분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs frontend"
 
-    (
-        for _ in $(seq 150); do
-            [ "$(docker inspect --format='{{.State.Health.Status}}' moavi-orchestrator 2>/dev/null)" = "healthy" ] && exit 0
-            sleep 2
-        done
-        exit 1
-    ) &
-    wait_pid=$!
-    spinner $wait_pid "orchestrator 기동 중..."
-    wait $wait_pid || log_error "orchestrator가 5분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs orchestrator"
+    if [ "$EDITION" != "community" ]; then   # 커뮤니티판에는 orchestrator 가 없음
+        (
+            for _ in $(seq 150); do
+                [ "$(docker inspect --format='{{.State.Health.Status}}' moavi-orchestrator 2>/dev/null)" = "healthy" ] && exit 0
+                sleep 2
+            done
+            exit 1
+        ) &
+        wait_pid=$!
+        spinner $wait_pid "orchestrator 기동 중..."
+        wait $wait_pid || log_error "orchestrator가 5분 안에 기동하지 않았습니다. 확인: cd $INSTALL_DIR && docker compose logs orchestrator"
+    fi
 
     if [ "$HTTPS" = "true" ]; then
         # nginx 는 시작할 때 찾은 frontend 주소를 계속 씀 → frontend 가 새로 만들어져 내부 주소가 바뀌면 502
@@ -822,7 +839,7 @@ print_summary() {
     echo ""
     echo -e "    ${BOLD}접속 주소${NC}   ${CYAN}${PUBLIC_URL:-http://$SERVER_IP:3000}${NC}"
     echo -e "    ${BOLD}설치 위치${NC}   $INSTALL_DIR"
-    echo -e "    ${BOLD}버전${NC}        MOAVI $MOAVI_VERSION"
+    echo -e "    ${BOLD}버전${NC}        MOAVI $([ "$EDITION" = "community" ] && echo "Community " || echo "Enterprise ")$MOAVI_VERSION"
     echo -e "    ${BOLD}소요 시간${NC}   $(format_duration $duration)"
     echo -e "    ${BOLD}설치 로그${NC}   $LOG_FILE"
     echo ""
@@ -833,7 +850,12 @@ print_summary() {
         echo ""
     fi
 
-    if [ -z "$LICENSE_KEY" ] && [ -z "$(get_env LICENSE_KEY)" ]; then
+    if [ "$EDITION" = "community" ]; then
+        echo -e "    ${DIM}커뮤니티판 — DRS·보고서·RBAC·알림 등 Enterprise 기능은 꺼져 있습니다${NC}"
+        echo -e "    ${DIM}Enterprise 문의: sales@makussystems.co.kr (Enterprise 번들로 --upgrade 하면 설정·데이터 유지)${NC}"
+        [ -z "$LICENSE_KEY" ] || echo -e "    ${YELLOW}${BOLD}!${NC} ${YELLOW}커뮤니티판에는 라이선스 키가 적용되지 않습니다 (Enterprise 번들 필요)${NC}"
+        echo ""
+    elif [ -z "$LICENSE_KEY" ] && [ -z "$(get_env LICENSE_KEY)" ]; then
         echo -e "    ${YELLOW}${BOLD}!${NC} ${YELLOW}라이선스 키가 입력되지 않았습니다${NC}"
         echo -e "      화면의 ${BOLD}설정 > 라이선스${NC}에서 입력하거나 ${DIM}--license <키>${NC} 로 다시 실행하세요"
         echo ""
