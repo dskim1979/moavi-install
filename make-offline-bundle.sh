@@ -160,7 +160,7 @@ BUNDLE_MOAVI_REGISTRY="$MOAVI_REGISTRY"
 BUNDLE_IMAGES="${IMAGES[*]}"
 BUNDLE_CREATED="$(date +%Y-%m-%d)"
 EOF
-if [ "$EDITION" = "community" ]; then EDITION_LABEL="Community"; else EDITION_LABEL="Enterprise"; fi
+if [ "$EDITION" = "community" ]; then EDITION_LABEL="Community"; LICENSE_OPT=""; else EDITION_LABEL="Enterprise"; LICENSE_OPT="[--license <라이선스 키>] "; fi
 cat > "$B/README-OFFLINE.txt" << EOF
 MOAVI $EDITION_LABEL $MOAVI_VERSION 격리망 설치 번들 ($(date +%Y-%m-%d))
 (주)매커스시스템즈 — support@makussystems.co.kr
@@ -168,8 +168,8 @@ Based on ProxCenter Technology · Proxmox VE 기반
 
 1) 이 파일($NAME.tar)과 SHA256 값을 기관 반입 절차(망연계 자료전송·백신 검사)로 반입
 2) 설치 서버에서 (디스크 여유 15GB 이상, root):
-     tar -xf moavi-offline-$MOAVI_VERSION.tar
-     sudo bash $NAME/install-moavi.sh --offline $NAME [--license <라이선스 키>] [--cert 인증서 --key 개인키]
+     tar -xf $NAME.tar
+     sudo bash $NAME/install-moavi.sh --offline $NAME $LICENSE_OPT[--cert 인증서 --key 개인키]
 3) 업그레이드: 새 번들을 풀고
      sudo bash $NAME/install-moavi.sh --offline $NAME --upgrade
 4) 설치 후 https://<서버 주소> 접속 → 첫 관리자 계정 생성
